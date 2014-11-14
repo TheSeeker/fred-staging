@@ -3,6 +3,9 @@
  * http://www.gnu.org/ for further details of the GPL. */
 package freenet.io.xfer;
 
+import static java.util.concurrent.TimeUnit.MINUTES;
+import static java.util.concurrent.TimeUnit.SECONDS;
+
 import freenet.io.comm.AsyncMessageCallback;
 import freenet.io.comm.AsyncMessageFilterCallback;
 import freenet.io.comm.ByteCounter;
@@ -12,13 +15,10 @@ import freenet.io.comm.Message;
 import freenet.io.comm.MessageFilter;
 import freenet.io.comm.NotConnectedException;
 import freenet.io.comm.PeerContext;
-import freenet.io.comm.PeerRestartedException;
 import freenet.node.PrioRunnable;
-import freenet.node.SyncSendWaitedTooLongException;
 import freenet.support.BitArray;
 import freenet.support.LogThresholdCallback;
 import freenet.support.Logger;
-import freenet.support.TimeUtil;
 import freenet.support.Logger.LogLevel;
 import freenet.support.io.NativeThread;
 
@@ -38,9 +38,9 @@ public class BulkTransmitter {
 	}
 
 	/** If no packets sent in this period, and no completion acknowledgement / cancellation, assume failure. */
-	static final int TIMEOUT = 5*60*1000;
+	static final long TIMEOUT = MINUTES.toMillis(5);
 	/** Time to hang around listening for the last FNPBulkReceivedAll message */
-	static final int FINAL_ACK_TIMEOUT = 10*1000;
+	static final long FINAL_ACK_TIMEOUT = SECONDS.toMillis(10);
 	final AllSentCallback allSentCallback;
 	/** Available blocks */
 	final PartiallyReceivedBulk prb;
@@ -55,7 +55,6 @@ public class BulkTransmitter {
 	final long peerBootID;
 	private boolean sentCancel;
 	private boolean finished;
-	final int packetSize;
 	/** Not expecting a response? */
 	final boolean noWait;
 	private long finishTime=-1;
@@ -170,8 +169,6 @@ public class BulkTransmitter {
 			cancel("Disconnected");
 			throw e;
 		}
-		packetSize = DMT.bulkPacketTransmitSize(prb.blockSize) +
-			peer.getOutgoingMangler().fullHeadersLengthOneMessage();
 	}
 
 	/**
@@ -251,11 +248,9 @@ public class BulkTransmitter {
 		long lastSentPacket = System.currentTimeMillis();
 outer:	while(true) {
 			int max = Math.min(Integer.MAX_VALUE, prb.blocks);
-			PacketThrottle throttle = peer.getThrottle();
-			if(throttle != null)
-				max = Math.min(max, (int)Math.min(Integer.MAX_VALUE, throttle.getWindowSize()));
-			// FIXME hardcoded limit for memory usage. We can probably get away with more for now but if we start doing lots of bulk transfers we'll need to limit this globally...
-			max = Math.min(max, 100);
+			max = Math.min(max, (int)Math.min(Integer.MAX_VALUE, peer.getThrottleWindowSize()));
+			// FIXME Need to introduce the global limiter of [code]max[/code] for memory management instead of hard-code for each, no? 
+			max = Math.min(max, 100); 
 			if(max < 1) max = 1;
 			
 			if(prb.isAborted()) {
@@ -310,7 +305,7 @@ outer:	while(true) {
 					
 					// Wait for a packet to come in, BulkReceivedAll or BulkReceiveAborted
 					try {
-						wait(60*1000);
+						wait(SECONDS.toMillis(60));
 					} catch (InterruptedException e) {
 						// No problem
 						continue;
@@ -337,20 +332,15 @@ outer:	while(true) {
 			try {
 				if(logMINOR) Logger.minor(this, "Sending packet "+blockNo);
 				Message msg = DMT.createFNPBulkPacketSend(uid, blockNo, buf, realTime);
-				boolean isOldFNP = peer.isOldFNP();
-				UnsentPacketTag tag = new UnsentPacketTag(isOldFNP);
-				if(isOldFNP) {
-					peer.sendThrottledMessage(msg, buf.length, ctr, BulkReceiver.TIMEOUT, false, tag);
-				} else {
-					peer.sendAsync(msg, tag, ctr);
-					synchronized(this) {
-						while(inFlightPackets >= max && !failedPacket)
-							try {
-								wait(1000);
-							} catch (InterruptedException e) {
-								// Ignore
-							}
-					}
+				UnsentPacketTag tag = new UnsentPacketTag();
+				peer.sendAsync(msg, tag, ctr);
+				synchronized(this) {
+					while(inFlightPackets >= max && !failedPacket)
+						try {
+							wait(1000);
+						} catch (InterruptedException e) {
+							// Ignore
+						}
 				}
 				synchronized(this) {
 					blocksNotSentButPresent.setBit(blockNo, false);
@@ -361,19 +351,6 @@ outer:	while(true) {
 				if(logMINOR)
 					Logger.minor(this, "Cancelled: not connected "+this);
 				throw new DisconnectedException();
-			} catch (PeerRestartedException e) {
-				cancel("PeerRestarted");
-				if(logMINOR)
-					Logger.minor(this, "Cancelled: not connected "+this);
-				throw new DisconnectedException();
-			} catch (WaitedTooLongException e) {
-				long rtt = peer.getThrottle().getRoundTripTime();
-				Logger.error(this, "Failed to send bulk packet "+blockNo+" for "+this+" RTT is "+TimeUtil.formatTime(rtt));
-				return false;
-			} catch (SyncSendWaitedTooLongException e) {
-				// Impossible
-				Logger.error(this, "Impossible: Caught "+e, e);
-				return false;
 			}
 		}
 	}
@@ -424,26 +401,14 @@ outer:	while(true) {
 
 		private boolean finished;
 		private boolean sent;
-		private final boolean isOldFNP;
 		
-		private UnsentPacketTag(boolean isOldFNP) {
-			this.isOldFNP = isOldFNP;
+		private UnsentPacketTag() {
 			synchronized(BulkTransmitter.this) {
 				inFlightPackets++;
 				unsentPackets++;
 			}
 		}
 		
-		public synchronized void waitForCompletion() {
-			while(!finished) {
-				try {
-					wait();
-				} catch (InterruptedException e) {
-					// Ignore
-				}
-			}
-		}
-
 		@Override
 		public void acknowledged() {
 			complete(false);

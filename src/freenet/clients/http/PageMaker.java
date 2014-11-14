@@ -21,12 +21,26 @@ import freenet.support.api.HTTPRequest;
 public final class PageMaker {
 	
 	public enum THEME {
-		BOXED("boxed", "Boxed", "", false, false),
+		BOXED("boxed", "Boxed (Top menu)", "", false, false),
+		BOXED_CLASSIC("boxed-classic", "Boxed (Classic menu)", "", false, false),
+		BOXED_DROPDOWN("boxed-dropdown", "Boxed (Dropdown menu)", "", false, false),
+		BOXED_DYNAMIC("boxed-classic", "Boxed (Dynamic menu)", "", false, false),
+		BOXED_STATIC("boxed-static", "Boxed (Static menu)", "", false, false),
 		CLEAN("clean", "Clean", "Mr. Proper", false, false),
+		CLEAN_CLASSIC("clean-classic", "Clean (Classic menu)", "Clean theme with a classic menu.", false, false),
 		CLEAN_DROPDOWN("clean-dropdown", "Clean (Dropdown menu)", "Clean theme with a dropdown menu.", false, false),
 		CLEAN_STATIC("clean-static", "Clean (Static menu)", "Clean theme with a static menu.", false, false),
-		GRAYANDBLUE("grayandblue", "Gray And Blue", "", false, false),
-		SKY("sky", "Sky", "", false, false),
+		CLEAN_TOP("clean-top", "Clean (Top menu)", "Clean theme with a static top menu.", false, false),
+		GRAYANDBLUE("grayandblue", "Gray And Blue (Classic menu)", "", false, false),
+		GRAYANDBLUE_DYNAMIC("grayandblue-dynamic", "Gray And Blue (Dynamic menu)", "", false, false),
+		GRAYANDBLUE_DROPDOWN("grayandblue-dropdown", "Gray And Blue (Dropdown menu)", "", false, false),
+		GRAYANDBLUE_STATIC("grayandblue-static", "Gray And Blue (Static menu)", "", false, false),
+		GRAYANDBLUE_TOP("grayandblue-top", "Gray And Blue (Top menu)", "", false, false),
+		SKY("sky", "Sky (Top menu)", "", false, false),
+		SKY_CLASSIC("sky-classic", "Sky (Classic menu)", "", false, false),
+		SKY_DROPDOWN("sky-dropdown", "Sky (Dropdown menu)", "", false, false),
+		SKY_DYNAMIC("sky-dynamic", "Sky (Dynamic menu)", "", false, false),
+		SKY_STATIC("sky-static", "Sky (Static menu)", "", false, false),
 		MINIMALBLUE("minimalblue", "Minimal Blue", "A minimalistic theme in blue", false, false),
 		MINIMALISTIC("minimalist", "Minimalistic", "A very minimalistic theme based on Google's designs", true, true),
 		RABBIT_HOLE("rabbit-hole", "Into the Rabbit Hole", "Simple and clean theme", false, false);
@@ -34,11 +48,25 @@ public final class PageMaker {
 		
 		public static final String[] possibleValues = {
 			BOXED.code,
+			BOXED_CLASSIC.code,
+			BOXED_DROPDOWN.code,
+			BOXED_DYNAMIC.code,
+			BOXED_STATIC.code,
 			CLEAN.code,
+			CLEAN_CLASSIC.code,
 			CLEAN_DROPDOWN.code,
 			CLEAN_STATIC.code,
+			CLEAN_TOP.code,
 			GRAYANDBLUE.code,
+			GRAYANDBLUE_DYNAMIC.code,
+			GRAYANDBLUE_DROPDOWN.code,
+			GRAYANDBLUE_STATIC.code,
+			GRAYANDBLUE_TOP.code,
 			SKY.code,
+			SKY_CLASSIC.code,
+			SKY_DROPDOWN.code,
+			SKY_DYNAMIC.code,
+			SKY_STATIC.code,
 			MINIMALBLUE.code,
 			MINIMALISTIC.code,
 			RABBIT_HOLE.code
@@ -88,6 +116,10 @@ public final class PageMaker {
 	
 	public static final int MODE_SIMPLE = 1;
 	public static final int MODE_ADVANCED = 2;
+
+	/** Parameter for simple/advanced mode switch. */
+	private static final String MODE_SWITCH_PARAMETER = "fproxyAdvancedMode";
+
 	private THEME theme;
 	private String override;
 	private final Node node;
@@ -132,7 +164,7 @@ public final class PageMaker {
 				navigationLinkL10n.put(name, l10n);
 		}
 
-		@Deprecated
+		/** Remove a link from this sub-menu. */
 		public void removeNavigationLink(String name) {
 			navigationLinkTexts.remove(name);
 			navigationLinkTextsNonFull.remove(name);
@@ -141,14 +173,6 @@ public final class PageMaker {
 			navigationLinkL10n.remove(name); //Should this be here? If so, why not remove from navigationLinkCallbacks too
 		}
 
-		@Deprecated
-		public void removeAllNavigationLinks() {
-			navigationLinkTexts.clear();
-			navigationLinkTextsNonFull.clear();
-			navigationLinkTitles.clear();
-			navigationLinks.clear();
-			navigationLinkL10n.clear(); //Should this be here? If so, why not clear navigationLinkCallbacks too
-		}
 	}
 	
 	protected PageMaker(THEME t, Node n) {
@@ -204,18 +228,14 @@ public final class PageMaker {
 			throw new NullPointerException("there is no menu named "+menutext);
 		menu.addNavigationLink(path, name, title, fullOnly, cb, l10n);
 	}
-	
-	/* FIXME: Implement a proper way for chosing what the menu looks like upon handleHTTPGet/Post */
-	@Deprecated
+
+	/** Remove a navigation link from a sub-menu. Applies globally, do not use this to customise 
+	 * menus when sending one page! */
 	public synchronized void removeNavigationLink(String menutext, String name) {
 		SubMenu menu = subMenus.get(menutext);
-		menu.removeNavigationLink(name);
-	}
-	
-	@Deprecated
-	public synchronized void removeAllNavigationLinks() {
-		for(SubMenu menu : subMenus.values())
-			menu.removeAllNavigationLinks();
+		// The menu may have already been removed.
+		if(menu != null)
+		    menu.removeNavigationLink(name);
 	}
 	
 	public HTMLNode createBackLink(ToadletContext toadletContext, String name) {
@@ -225,25 +245,76 @@ public final class PageMaker {
 		}
 		return new HTMLNode("a", new String[] { "href", "title" }, new String[] { "javascript:back()", name }, name);
 	}
-	
+
+	/**
+	 * Generates an FProxy template page suitable for adding content to.
+	 *
+	 * @param title
+	 *            Title of the page.
+	 * @param ctx
+	 *            ToadletContext to use to render the page.
+	 * @return A template PageNode.
+	 */
 	public PageNode getPageNode(String title, ToadletContext ctx) {
 		return getPageNode(title, true, ctx);
 	}
 
+	/**
+	 * Generates an FProxy template page with optional navigation bar suitable
+	 * for adding content to.
+	 *
+	 * @param title
+	 *            Title of the page.
+	 * @param renderNavigationLinks
+	 *            Whether to render navigation links.
+	 * @param ctx
+	 *            ToadletContext to use to render the page.
+	 * @return A template PageNode.
+	 * @deprecated Use
+	 *             {@link #getPageNode(String, ToadletContext, RenderParameters)}
+	 *             instead
+	 */
+	@Deprecated
 	public PageNode getPageNode(String title, boolean renderNavigationLinks, ToadletContext ctx) {
 		return getPageNode(title, renderNavigationLinks, true, ctx);
 	}
 
 	/**
-	 * Generates an FProxy template page with optional navigation bar and status information suitable for adding
-	 * content to.
-	 * @param title Title of the page.
-	 * @param renderNavigationLinks Whether to render navigation links.
-	 * @param renderStatus Whether to render the status display.
-	 * @param ctx ToadletContext to use to render the page.
+	 * Generates an FProxy template page with optional navigation bar and status
+	 * information suitable for adding content to.
+	 *
+	 * @param title
+	 *            Title of the page.
+	 * @param renderNavigationLinks
+	 *            Whether to render navigation links.
+	 * @param renderStatus
+	 *            Whether to render the status display.
+	 * @param ctx
+	 *            ToadletContext to use to render the page.
+	 * @return A template PageNode.
+	 * @deprecated Use
+	 *             {@link #getPageNode(String, ToadletContext, RenderParameters)}
+	 *             instead
+	 */
+	@Deprecated
+	public PageNode getPageNode(String title, boolean renderNavigationLinks, boolean renderStatus, ToadletContext ctx) {
+		return getPageNode(title, ctx, new RenderParameters().renderNavigationLinks(renderNavigationLinks).renderStatus(renderStatus).renderModeSwitch(true));
+	}
+
+	/**
+	 * Generates an FProxy template page suitable for adding content to.
+	 *
+	 * @param title
+	 *            Title of the page.
+	 * @param ctx
+	 *            ToadletContext to use to render the page. Can be null, e.g. if the HTML is not 
+	 *            being generated as part of a toadlet request, for example if it's using the old
+	 *            FredPluginHTTP interface.
+	 * @param renderParameters
+	 *            Parameters for inclusion or omission of certain page elements
 	 * @return A template PageNode.
 	 */
-	public PageNode getPageNode(String title, boolean renderNavigationLinks, boolean renderStatus, ToadletContext ctx) {
+	public PageNode getPageNode(String title, ToadletContext ctx, RenderParameters renderParameters) {
 		boolean fullAccess = ctx == null ? false : ctx.isAllowedFullAccess();
 		HTMLNode pageNode = new HTMLNode.HTMLDoctype("html", "-//W3C//DTD XHTML 1.1//EN");
 		HTMLNode htmlNode = pageNode.addChild("html", "xml:lang", NodeL10n.getBase().getSelectedLanguage().isoCode);
@@ -281,7 +352,9 @@ public final class PageMaker {
 			t = null;
 		String activePath = "";
 		if(t != null) activePath = t.path();
-		HTMLNode bodyNode = htmlNode.addChild("body", "id", "fproxy-page");
+		HTMLNode bodyNode = htmlNode.addChild("body",
+		        new String[] { "class", "id" },
+		        new String[] { "fproxy-page", filterCSSIdentifier("page-"+activePath) });
 		//Add a hidden input that has the request's id
 		if(webPushingEnabled)
 			bodyNode.addChild("input",new String[]{"type","name","value","id"},new String[]{"hidden","requestId",ctx.getUniqueId(),"requestId"});
@@ -294,11 +367,11 @@ public final class PageMaker {
 		HTMLNode pageDiv = bodyNode.addChild("div", "id", "page");
 		HTMLNode topBarDiv = pageDiv.addChild("div", "id", "topbar");
 
-		if (renderStatus) {
+		if (renderParameters.isRenderStatus() && fullAccess) {
 			final HTMLNode statusBarDiv = pageDiv.addChild("div", "id", "statusbar-container").addChild("div", "id", "statusbar");
 
 			 if (node != null && node.clientCore != null) {
-				 final HTMLNode alerts = node.clientCore.alerts.createSummary(true);
+				 final HTMLNode alerts = ctx.getAlertManager().createSummary(true);
 				 if (alerts != null) {
 					 statusBarDiv.addChild(alerts).addAttribute("id", "statusbar-alerts");
 					 statusBarDiv.addChild("div", "class", "separator", "\u00a0");
@@ -308,17 +381,19 @@ public final class PageMaker {
 
 			statusBarDiv.addChild("div", "id", "statusbar-language").addChild("a", "href", "/config/node#l10n", NodeL10n.getBase().getSelectedLanguage().fullName);
 
-			if (node.clientCore != null && ctx != null) {
-				parseMode(ctx);
+			if (node.clientCore != null && ctx != null && renderParameters.isRenderModeSwitch()) {
+				boolean isAdvancedMode = ctx.isAdvancedModeEnabled();
+				String uri = ctx.getUri().getQuery();
+				Map<String, List<String>> parameters = HTTPRequestImpl.parseUriParameters(uri, true);
+				List<String> newModeSwitchValues = new ArrayList<String>();
+				newModeSwitchValues.add(String.valueOf(isAdvancedMode ? MODE_SIMPLE : MODE_ADVANCED));
+				/* overwrite any previously existing parameter value. */
+				parameters.put(MODE_SWITCH_PARAMETER, newModeSwitchValues);
+
 				statusBarDiv.addChild("div", "class", "separator", "\u00a0");
 				final HTMLNode switchMode = statusBarDiv.addChild("div", "id", "statusbar-switchmode");
-				if (ctx.activeToadlet().container.isAdvancedModeEnabled()) {
-					switchMode.addAttribute("class", "simple");
-					switchMode.addChild("a", "href", "?mode=1", NodeL10n.getBase().getString("StatusBar.switchToSimpleMode"));
-				} else {
-					switchMode.addAttribute("class", "advanced");
-					switchMode.addChild("a", "href", "?mode=2", NodeL10n.getBase().getString("StatusBar.switchToAdvancedMode"));
-				}
+				switchMode.addAttribute("class", isAdvancedMode ? "simple" : "advanced");
+				switchMode.addChild("a", "href", "?" + HTTPRequestImpl.createQueryString(parameters, false), isAdvancedMode ? NodeL10n.getBase().getString("StatusBar.switchToSimpleMode") : NodeL10n.getBase().getString("StatusBar.switchToAdvancedMode"));
 			}
 
 			if (node != null && node.clientCore != null) {
@@ -382,7 +457,7 @@ public final class PageMaker {
 		}
 
 		topBarDiv.addChild("h1", title);
-		if (renderNavigationLinks) {
+		if (renderParameters.isRenderNavigationLinks()) {
 			SubMenu selected = null;
 			// Render the full menu.
 			HTMLNode navbarDiv = pageDiv.addChild("div", "id", "navbar");
@@ -403,12 +478,15 @@ public final class PageMaker {
 							sublistItem = subnavlist.addChild("li", "class", "submenuitem-selected");
 							isSelected = true;
 						} else {
-							sublistItem = subnavlist.addChild("li", "class", "submenuitem-not-selected");;
+							sublistItem = subnavlist.addChild("li", "class", "submenuitem-not-selected");
 						}
 						
 						FredPluginL10n l10n = menu.navigationLinkL10n.get(navigationLink);
 						if(l10n == null) l10n = menu.plugin;
 						if(l10n != null) {
+							// From a plugin. Include the plugin name in the id.
+							sublistItem.addAttribute("id", getPluginL10nCSSIdentifier(l10n, navigationTitle));
+
 							if(navigationTitle != null) {
 								String newNavigationTitle = l10n.getString(navigationTitle);
 								if(newNavigationTitle == null) {
@@ -426,6 +504,9 @@ public final class PageMaker {
 								}
 							}
 						} else {
+							// Not from a plugin. Add the localization key as id.
+							sublistItem.addAttribute("id", filterCSSIdentifier(navigationTitle));
+
 							if(navigationTitle != null) navigationTitle = NodeL10n.getBase().getString(navigationTitle);
 							if(navigationLink != null) navigationLink = NodeL10n.getBase().getString(navigationLink);
 						}
@@ -439,7 +520,7 @@ public final class PageMaker {
 						if(isSelected) {
 							selected = menu;
 							subnavlist.addAttribute("class", "subnavlist-selected");
-							listItem = new HTMLNode("li", "id", "navlist-selected");
+							listItem = new HTMLNode("li", "class", "navlist-selected");
 						} else {
 							subnavlist.addAttribute("class", "subnavlist");
 							listItem = new HTMLNode("li", "class", "navlist-not-selected");
@@ -447,9 +528,20 @@ public final class PageMaker {
 						String menuItemTitle = menu.defaultNavigationLinkTitle;
 						String text = menu.navigationLinkText;
 						if(menu.plugin == null) {
+							// Not from a plugin. Add the localization key as id.
+							listItem.addAttribute("id", filterCSSIdentifier(menuItemTitle));
+
 							menuItemTitle = NodeL10n.getBase().getString(menuItemTitle);
 							text = NodeL10n.getBase().getString(text);
 						} else {
+							/*
+							 * From a plugin. Include the plugin name in the id.
+							 *
+							 * Note that a plugin could misbehave and fail to register its
+							 * menu with proper localization keys.
+							 */
+							listItem.addAttribute("id", getPluginL10nCSSIdentifier(menu.plugin, text));
+
 							String newTitle = menu.plugin.getString(menuItemTitle);
 							if(newTitle == null) {
 								Logger.error(this, "Plugin '"+menu.plugin+"' did return null in getString(key)!");
@@ -485,7 +577,7 @@ public final class PageMaker {
 					if(activePath.equals(navigationPath)) {
 						sublistItem = subnavlist.addChild("li", "class", "submenuitem-selected");
 					} else {
-						sublistItem = subnavlist.addChild("li");
+						sublistItem = subnavlist.addChild("li", "class", "submenuitem-not-selected");
 					}
 					
 					FredPluginL10n l10n = selected.navigationLinkL10n.get(navigationLink);
@@ -508,6 +600,35 @@ public final class PageMaker {
 		}
 		HTMLNode contentDiv = pageDiv.addChild("div", "id", "content");
 		return new PageNode(pageNode, headNode, contentDiv);
+	}
+
+	/**
+	 * Create a CSS identifier incorporating both a class name and a localization key.
+	 * @param plugin plugin localization instance (used for class name)
+	 * @param key localization key
+	 * @return valid CSS identifier.
+	 */
+	// TODO: Less-stupid name.
+	public static String getPluginL10nCSSIdentifier(FredPluginL10n plugin, String key) {
+		return filterCSSIdentifier(plugin.getClass().getName()+'-'+key);
+	}
+
+	/**
+	 * Filters a given string so that it will be a valid CSS identifier. It replaces all characters that are not
+	 * a dash, underscore, or alphanumeric with an underscore. If the first character is a dash and the second
+	 * character is not a letter or underscore, replaces the second character with an underscore. This filter is
+	 * overly strict as it does not allow non-ASCII characters or escapes. If the given string is below two
+	 * characters in length, it appends underscores until it is not.
+	 * @param input string to filter
+	 * @return a filtered string guaranteed to be a syntactically valid CSS identifier.
+	 * @link http://www.w3.org/TR/CSS21/syndata.html#tokenization
+	 * @link http://www.w3.org/TR/CSS21/grammar.html#scanner
+	 * @link http://stackoverflow.com/questions/448981/
+	 */
+	public static String filterCSSIdentifier(String input) {
+		while (input.length() < 2) input = input.concat("_");
+
+		return input.replaceFirst("^-[^_a-zA-Z]", "-_").replaceAll("[^-_a-zA-Z0-9]", "_");
 	}
 
 	public THEME getTheme() {
@@ -591,14 +712,17 @@ public final class PageMaker {
 	private HTMLNode getOverrideContent() {
 		return new HTMLNode("link", new String[] { "rel", "href", "type", "media", "title" }, new String[] { "stylesheet", override, "text/css", "screen", "custom" });
 	}
-	
+
+	public boolean advancedMode(HTTPRequest req, ToadletContainer container) {
+		return parseMode(req, container) >= MODE_ADVANCED;
+	}
+
 	/** Call this before getPageNode(), so the menus reflect the advanced mode setting. */
-	@Deprecated
 	public int parseMode(HTTPRequest req, ToadletContainer container) {
 		int mode = container.isAdvancedModeEnabled() ? MODE_ADVANCED : MODE_SIMPLE;
-		
-		if(req.isParameterSet("mode")) {
-			mode = req.getIntParam("mode", mode);
+
+		if(req.isParameterSet(MODE_SWITCH_PARAMETER)) {
+			mode = req.getIntParam(MODE_SWITCH_PARAMETER, mode);
 			if(mode == MODE_ADVANCED)
 				container.setAdvancedMode(true);
 			else
@@ -608,13 +732,123 @@ public final class PageMaker {
 		return mode;
 	}
 	
-	private void parseMode(ToadletContext ctx) {
-		HTTPRequest req = new HTTPRequestImpl(ctx.getUri(), "GET");
-		if(req.isParameterSet("mode"))
-			ctx.getContainer().setAdvancedMode(req.getIntParam("mode") == MODE_ADVANCED);
+	/**
+	 * Bundles parameters that are used to create the page node. The default for
+	 * the render parameters is to include all optional render tasks. Individual
+	 * tasks may be enabled or disabled by calling the appropriate methods which
+	 * returns a new {@link RenderParameters} object as {@link RenderParameters}
+	 * are immutable.
+	 *
+	 * @see PageMaker#getPageNode(String, ToadletContext, RenderParameters)
+	 * @author <a href="mailto:bombe@pterodactylus.net">David ?Bombe? Roden</a>
+	 */
+	public static class RenderParameters {
+
+		/** Whether to include navigation links in the page. */
+		private final boolean renderNavigationLinks;
+
+		/** Whether to include the status bar in the page. */
+		private final boolean renderStatus;
+
+		/** Whether to include the mode switch in the page. */
+		private final boolean renderModeSwitch;
+
+		/**
+		 * Creates default render parameters that include all elements.
+		 */
+		public RenderParameters() {
+			this(true, true, true);
+		}
+
+		/**
+		 * Creates render parameters.
+		 *
+		 * @param renderNavigationLinks
+		 *            {@code true} to include navigation links in the page
+		 * @param renderStatus
+		 *            {@code true} to include the status bar in the page
+		 * @param renderModeSwitch
+		 *            {@code true} to include the mode switch in the status bar
+		 */
+		private RenderParameters(boolean renderNavigationLinks, boolean renderStatus, boolean renderModeSwitch) {
+			this.renderNavigationLinks = renderNavigationLinks;
+			this.renderStatus = renderStatus;
+			this.renderModeSwitch = renderModeSwitch;
+		}
+
+		//
+		// ACCESSORS
+		//
+
+		/**
+		 * Returns whether the navigation links should be included in the page.
+		 *
+		 * @return {@code true} if the navigation links should be included in
+		 *         the page, {@code false} otherwise
+		 */
+		public boolean isRenderNavigationLinks() {
+			return renderNavigationLinks;
+		}
+
+		/**
+		 * Returns a new {@link RenderParameters} object that renders the
+		 * navigation links according to the given parameter.
+		 *
+		 * @param renderNavigationLinks
+		 *            {@code true} to render the navigation links, {@code false}
+		 *            otherwise
+		 * @return A new {@link RenderParameters} object
+		 */
+		public RenderParameters renderNavigationLinks(boolean renderNavigationLinks) {
+			return new RenderParameters(renderNavigationLinks, renderStatus, renderModeSwitch);
+		}
+
+		/**
+		 * Returns whether the status bar should be included in the page.
+		 *
+		 * @return {@code true} if the status bar should be included in the
+		 *         page, {@code false} otherwise
+		 */
+		public boolean isRenderStatus() {
+			return renderStatus;
+		}
+
+		/**
+		 * Returns a new {@link RenderParameters} object that renders the status
+		 * bar according to the given parameter.
+		 *
+		 * @param renderStatus
+		 *            {@code true} to render the status bar, {@code false}
+		 *            otherwise
+		 * @return A new {@link RenderParameters} object
+		 */
+		public RenderParameters renderStatus(boolean renderStatus) {
+			return new RenderParameters(renderNavigationLinks, renderStatus, renderModeSwitch);
+		}
+
+		/**
+		 * Returns whether the mode switch should be included in the page.
+		 *
+		 * @return {@code true} if the mode switch should be included in the
+		 *         page, {@code false} otherwise
+		 */
+		public boolean isRenderModeSwitch() {
+			return renderModeSwitch;
+		}
+
+		/**
+		 * Returns a new {@link RenderParameters} object that renders the mode
+		 * switch according to the given parameter.
+		 *
+		 * @param renderModeSwitch
+		 *            {@code true} to render the mode switch, {@code false}
+		 *            otherwise
+		 * @return A new {@link RenderParameters} object
+		 */
+		public RenderParameters renderModeSwitch(boolean renderModeSwitch) {
+			return new RenderParameters(renderNavigationLinks, renderStatus, renderModeSwitch);
+		}
+
 	}
-	
-	private static final String l10n(String string) {
-		return NodeL10n.getBase().getString("PageMaker." + string);
-	}
+
 }

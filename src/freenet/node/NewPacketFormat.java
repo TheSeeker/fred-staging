@@ -3,12 +3,14 @@
  * http://www.gnu.org/ for further details of the GPL. */
 package freenet.node;
 
+import static java.util.concurrent.TimeUnit.MINUTES;
+
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Vector;
 
 import freenet.crypt.BlockCipher;
 import freenet.crypt.HMAC;
@@ -19,6 +21,7 @@ import freenet.io.comm.Peer;
 import freenet.io.comm.Peer.LocalAddressException;
 import freenet.io.xfer.PacketThrottle;
 import freenet.node.NewPacketFormatKeyContext.AddedAcks;
+import freenet.support.Fields;
 import freenet.support.LogThresholdCallback;
 import freenet.support.Logger;
 import freenet.support.Logger.LogLevel;
@@ -31,11 +34,13 @@ public class NewPacketFormat implements PacketFormat {
 	// FIXME Use a more efficient structure - int[] or maybe just a big byte[].
 	// FIXME increase this significantly to let it ride over network interruptions.
 	private static final int NUM_SEQNUMS_TO_WATCH_FOR = 1024;
+	// FIXME This should be globally allocated according to available memory etc. For links with
+	// high bandwidth and high latency, and lots of memory, a much bigger buffer would be helpful.
 	static final int MAX_RECEIVE_BUFFER_SIZE = 256 * 1024;
 	private static final int MSG_WINDOW_SIZE = 65536;
 	private static final int NUM_MESSAGE_IDS = 268435456;
 	static final long NUM_SEQNUMS = 2147483648l;
-	private static final int MAX_MSGID_BLOCK_TIME = 10 * 60 * 1000;
+	private static final long MAX_MSGID_BLOCK_TIME = MINUTES.toMillis(10);
 	private static final int MAX_ACKS = 500;
 	static boolean DO_KEEPALIVES = true;
 
@@ -94,7 +99,6 @@ public class NewPacketFormat implements PacketFormat {
 	
 	private long timeLastSentPacket;
 	private long timeLastSentPayload;
-	private long timeLastSentPing;
 
 	public NewPacketFormat(BasePeerNode pn, int ourInitialMsgID, int theirInitialMsgID) {
 		this.pn = pn;
@@ -134,16 +138,16 @@ public class NewPacketFormat implements PacketFormat {
 			}
 		}
 		if(packet == null) {
-			Logger.warning(this, "Could not decrypt received packet");
+			if(logMINOR) Logger.minor(this, "Could not decrypt received packet");
 			return false;
 		}
 
 		pn.receivedPacket(false, true);
 		pn.verified(s);
 		pn.maybeRekey();
-		pn.reportIncomingPacket(buf, offset, length, now);
+		pn.reportIncomingBytes(length);
 
-		LinkedList<byte[]> finished = handleDecryptedPacket(packet, s);
+		List<byte[]> finished = handleDecryptedPacket(packet, s);
 		if(logMINOR && !finished.isEmpty()) 
 			Logger.minor(this, "Decoded messages: "+finished.size());
 		DecodingMessageGroup group = pn.startProcessingDecryptedMessages(finished.size());
@@ -155,8 +159,8 @@ public class NewPacketFormat implements PacketFormat {
 		return true;
 	}
 
-	LinkedList<byte[]> handleDecryptedPacket(NPFPacket packet, SessionKey sessionKey) {
-		LinkedList<byte[]> fullyReceived = new LinkedList<byte[]>();
+	List<byte[]> handleDecryptedPacket(NPFPacket packet, SessionKey sessionKey) {
+		List<byte[]> fullyReceived = new LinkedList<byte[]>();
 
 		NewPacketFormatKeyContext keyContext = sessionKey.packetContext;
 		for(int ack : packet.getAcks()) {
@@ -169,25 +173,24 @@ public class NewPacketFormat implements PacketFormat {
 			if(logMINOR) Logger.minor(this, "Not acking because " + (packet.getError() ? "error" : "no fragments"));
 			dontAck = true;
 		}
-		ArrayList<Message> lossyMessages = null;
 		List<byte[]> l = packet.getLossyMessages();
 		if(l != null && !l.isEmpty())
-			lossyMessages = new ArrayList<Message>(l.size());
-		for(byte[] buf : packet.getLossyMessages()) {
-			// FIXME factor out parsing once we are sure these are not bogus.
-			// For now we have to be careful.
-			Message msg = Message.decodeMessageLax(buf, pn, 0);
-			if(msg == null) {
-				lossyMessages.clear();
-				break;
+		{
+		    ArrayList<Message> lossyMessages = new ArrayList<Message>(l.size());
+			for(byte[] buf : l) {
+				// FIXME factor out parsing once we are sure these are not bogus.
+				// For now we have to be careful.
+				Message msg = Message.decodeMessageLax(buf, pn, 0);
+				if(msg == null) {
+					lossyMessages.clear();
+					break;
+				}
+				if(!msg.getSpec().isLossyPacketMessage()) {
+					lossyMessages.clear();
+					break;
+				}
+				lossyMessages.add(msg);
 			}
-			if(!msg.getSpec().isLossyPacketMessage()) {
-				lossyMessages.clear();
-				break;
-			}
-			lossyMessages.add(msg);
-		}
-		if(lossyMessages != null) {
 			// Handle them *before* the rest.
 			if(logMINOR && lossyMessages.size() > 0) Logger.minor(this, "Successfully parsed "+lossyMessages.size()+" lossy packet messages");
 			for(Message msg : lossyMessages)
@@ -320,8 +323,8 @@ public class NewPacketFormat implements PacketFormat {
 
 			int seqNum = keyContext.watchListOffset;
 			for(int i = 0; i < keyContext.seqNumWatchList.length; i++) {
-				keyContext.seqNumWatchList[i] = encryptSequenceNumber(seqNum++, sessionKey);
-				if((seqNum == NUM_SEQNUMS) || (seqNum < 0)) seqNum = 0;
+				keyContext.seqNumWatchList[i] = NewPacketFormat.encryptSequenceNumber(seqNum++, sessionKey);
+				if(seqNum < 0) seqNum = 0;
 			}
 		}
 
@@ -352,26 +355,24 @@ public class NewPacketFormat implements PacketFormat {
 			int seqNum = (int) ((0l + keyContext.watchListOffset + keyContext.seqNumWatchList.length) % NUM_SEQNUMS);
 			for(int i = keyContext.watchListPointer; i < (keyContext.watchListPointer + moveBy); i++) {
 				keyContext.seqNumWatchList[i % keyContext.seqNumWatchList.length] = encryptSequenceNumber(seqNum++, sessionKey);
-				if(seqNum == NUM_SEQNUMS) seqNum = 0;
+				if(seqNum < 0) seqNum = 0;
 			}
 
 			keyContext.watchListPointer = (keyContext.watchListPointer + moveBy) % keyContext.seqNumWatchList.length;
 			keyContext.watchListOffset = (int) ((0l + keyContext.watchListOffset + moveBy) % NUM_SEQNUMS);
 		}
 
-outer:
 		for(int i = 0; i < keyContext.seqNumWatchList.length; i++) {
 			int index = (keyContext.watchListPointer + i) % keyContext.seqNumWatchList.length;
-			for(int j = 0; j < keyContext.seqNumWatchList[index].length; j++) {
-				if(keyContext.seqNumWatchList[index][j] != buf[offset + hmacLength + j]) continue outer;
-			}
+			if (!Fields.byteArrayEqual(
+						buf, keyContext.seqNumWatchList[index],
+						offset + hmacLength, 0,
+						keyContext.seqNumWatchList[index].length))
+				continue;
 			
 			int sequenceNumber = (int) ((0l + keyContext.watchListOffset + i) % NUM_SEQNUMS);
 			if(logDEBUG) Logger.debug(this, "Received packet matches sequence number " + sequenceNumber);
-			// Copy it to avoid side-effects.
-			byte[] copy = new byte[length];
-			System.arraycopy(buf, offset, copy, 0, length);
-			NPFPacket p = decipherFromSeqnum(copy, 0, length, sessionKey, sequenceNumber);
+			NPFPacket p = decipherFromSeqnum(buf, offset, length, sessionKey, sequenceNumber);
 			if(p != null) {
 				if(logMINOR) Logger.minor(this, "Received packet " + p.getSequenceNumber()+" on "+sessionKey);
 				return p;
@@ -381,7 +382,7 @@ outer:
 		return null;
 	}
 
-	/** NOTE: THIS WILL DECRYPT THE DATA IN THE BUFFER !!! */
+	/** Must NOT modify buf contents. */
 	private NPFPacket decipherFromSeqnum(byte[] buf, int offset, int length, SessionKey sessionKey, int sequenceNumber) {
 		BlockCipher ivCipher = sessionKey.ivCipher;
 
@@ -394,18 +395,13 @@ outer:
 
 		ivCipher.encipher(IV, IV);
 
-		byte[] text = new byte[length - hmacLength];
-		System.arraycopy(buf, offset + hmacLength, text, 0, text.length);
-		byte[] hash = new byte[hmacLength];
-		System.arraycopy(buf, offset, hash, 0, hash.length);
+		byte[] payload = Arrays.copyOfRange(buf, offset + hmacLength, offset + length);
+		byte[] hash = Arrays.copyOfRange(buf, offset, offset + hmacLength);
 
-		if(!HMAC.verifyWithSHA256(sessionKey.hmacKey, text, hash)) return null;
+		if(!HMAC.verifyWithSHA256(sessionKey.hmacKey, payload, hash)) return null;
 
 		PCFBMode payloadCipher = PCFBMode.create(sessionKey.incommingCipher, IV);
-		payloadCipher.blockDecipher(buf, offset + hmacLength, length - hmacLength);
-
-		byte[] payload = new byte[length - hmacLength];
-		System.arraycopy(buf, offset + hmacLength, payload, 0, length - hmacLength);
+		payloadCipher.blockDecipher(payload, 0, payload.length);
 
 		NPFPacket p = NPFPacket.create(payload, pn);
 
@@ -427,7 +423,7 @@ outer:
 		return (((i1 < i2) && ((i2 - i1) > halfValue)) || ((i1 > i2) && (i1 - i2 < halfValue)));
 	}
 
-	private byte[] encryptSequenceNumber(int seqNum, SessionKey sessionKey) {
+	static byte[] encryptSequenceNumber(int seqNum, SessionKey sessionKey) {
 		byte[] seqNumBytes = new byte[4];
 		seqNumBytes[0] = (byte) (seqNum >>> 24);
 		seqNumBytes[1] = (byte) (seqNum >>> 16);
@@ -448,32 +444,32 @@ outer:
 	}
 
 	@Override
-	public boolean maybeSendPacket(long now, Vector<ResendPacketItem> rpiTemp, int[] rpiIntTemp, boolean ackOnly)
+	public boolean maybeSendPacket(long now, boolean ackOnly)
 	throws BlockedTooLongException {
 		SessionKey sessionKey = pn.getPreviousKeyTracker();
 		if(sessionKey != null) {
 			// Try to sent an ack-only packet.
-			if(maybeSendPacket(now, rpiTemp, rpiIntTemp, true, sessionKey)) return true;
+			if(maybeSendPacket(now, true, sessionKey)) return true;
 		}
 		sessionKey = pn.getUnverifiedKeyTracker();
 		if(sessionKey != null) {
 			// Try to sent an ack-only packet.
-			if(maybeSendPacket(now, rpiTemp, rpiIntTemp, true, sessionKey)) return true;
+			if(maybeSendPacket(now, true, sessionKey)) return true;
 		}
 		sessionKey = pn.getCurrentKeyTracker();
 		if(sessionKey == null) {
 			Logger.warning(this, "No key for encrypting hash");
 			return false;
 		}
-		return maybeSendPacket(now, rpiTemp, rpiIntTemp, ackOnly, sessionKey);
+		return maybeSendPacket(now, ackOnly, sessionKey);
 	}
 	
-	public boolean maybeSendPacket(long now, Vector<ResendPacketItem> rpiTemp, int[] rpiIntTemp, boolean ackOnly, SessionKey sessionKey)
+	public boolean maybeSendPacket(long now, boolean ackOnly, SessionKey sessionKey)
 	throws BlockedTooLongException {
 		int maxPacketSize = pn.getMaxPacketSize();
 		NewPacketFormatKeyContext keyContext = sessionKey.packetContext;
 
-		NPFPacket packet = createPacket(maxPacketSize - hmacLength, pn.getMessageQueue(), sessionKey, ackOnly);
+		NPFPacket packet = createPacket(maxPacketSize - hmacLength, pn.getMessageQueue(), sessionKey, ackOnly, pn.isUseCumulativeAcksSet());
 		if(packet == null) return false;
 
 		int paddedLen = packet.getLength() + hmacLength;
@@ -519,7 +515,7 @@ outer:
 			if(logMINOR) {
 				String fragments = null;
 				for(MessageFragment frag : packet.getFragments()) {
-					if(fragments == null) fragments = "" + frag.messageID;
+					if(fragments == null) fragments = String.valueOf(frag.messageID);
 					else fragments = fragments + ", " + frag.messageID;
 					fragments += " ("+frag.fragmentOffset+"->"+(frag.fragmentOffset+frag.fragmentLength-1)+")";
 				}
@@ -542,7 +538,7 @@ outer:
 
 		now = System.currentTimeMillis();
 		pn.sentPacket();
-		pn.reportOutgoingPacket(data, 0, data.length, now);
+		pn.reportOutgoingBytes(data.length);
 		if(pn.shouldThrottle()) {
 			pn.sentThrottledBytes(data.length);
 		}
@@ -560,7 +556,7 @@ outer:
 		return true;
 	}
 
-	NPFPacket createPacket(int maxPacketSize, PeerMessageQueue messageQueue, SessionKey sessionKey, boolean ackOnly) throws BlockedTooLongException {
+	NPFPacket createPacket(int maxPacketSize, PeerMessageQueue messageQueue, SessionKey sessionKey, boolean ackOnly, boolean useCumulativeAcks) throws BlockedTooLongException {
 		
 		checkForLostPackets();
 		
@@ -572,7 +568,7 @@ outer:
 		
 		NewPacketFormatKeyContext keyContext = sessionKey.packetContext;
 		
-		AddedAcks moved = keyContext.addAcks(packet, maxPacketSize, now);
+		AddedAcks moved = keyContext.addAcks(packet, maxPacketSize, now, useCumulativeAcks);
 		if(moved != null && moved.anyUrgentAcks) {
 			if(logDEBUG) Logger.debug(this, "Must send because urgent acks");
 			mustSend = true;
@@ -603,7 +599,7 @@ outer:
 				synchronized(sendBufferLock) {
 					// Always finish what we have started before considering sending more packets.
 					// Anything beyond this is beyond the scope of NPF and is PeerMessageQueue's job.
-					for(int i = 0; i < startedByPrio.size(); i++) {
+addOldLoop:			for(int i = 0; i < startedByPrio.size(); i++) {
 						HashMap<Integer, MessageWrapper> started = startedByPrio.get(i);
 						
 						//Try to finish messages that have been started
@@ -620,11 +616,13 @@ outer:
 								if(wrapper.allSent()) {
 									if((haveAddedStatsBulk == null) && wrapper.getItem().sendLoadBulk) {
 										addStatsBulk = true;
-										break;
+										// Add the lossy message outside the lock.
+										break addOldLoop;
 									}
 									if((haveAddedStatsRT == null) && wrapper.getItem().sendLoadRT) {
 										addStatsRT = true;
-										break;
+										// Add the lossy message outside the lock.
+										break addOldLoop;
 									}
 								}
 							}
@@ -689,12 +687,8 @@ outer:
 		boolean cantSend = false;
 		
 		boolean mustSendKeepalive = false;
-		boolean mustSendPing = false;
 		
 		if(DO_KEEPALIVES) {
-			// FIXME remove back compatibility kludge.
-			// This periodically pings 1356 nodes in order to ensure their UOM's don't timeout.
-			boolean needsPing = pn.getVersionNumber() == 1356;
 			synchronized(this) {
 				if(!mustSend) {
 					if(now - timeLastSentPacket > Node.KEEPALIVE_INTERVAL)
@@ -703,13 +697,10 @@ outer:
 				if((!ackOnly) && now - timeLastSentPayload > Node.KEEPALIVE_INTERVAL && 
 						packet.getFragments().isEmpty())
 					mustSendKeepalive = true;
-				if((!ackOnly) && needsPing && now - timeLastSentPing > Node.KEEPALIVE_INTERVAL) {
-					mustSendPing = true;
-				}
 			}
 		}
 		
-		if(mustSendKeepalive || mustSendPing) {
+		if(mustSendKeepalive) {
 			if(!checkedCanSend)
 				cantSend = !canSend(sessionKey);
 			checkedCanSend = true;
@@ -791,35 +782,24 @@ outer:
 							}
 							checkedCanSend = false;
 							if(cantSend) break;
+							boolean wasGeneratedPing = false;
 							
 							MessageItem item = null;
-							if(mustSendPing) {
-								// Create a ping for keepalive purposes.
-								// It will be acked, this ensures both sides don't timeout.
-								Message msg;
-								synchronized(this) {
-									msg = DMT.createFNPPing(pingCounter++);
-									timeLastSentPing = now;
-								}
-								item = new MessageItem(msg, null, null);
-								mustSendPing = false;
-								item.setDeadline(now + PacketSender.MAX_COALESCING_DELAY);
-							} else {
-								item = messageQueue.grabQueuedMessageItem(i);
-								if(item == null) {
-									if(mustSendKeepalive && packet.getFragments().isEmpty()) {
-										// Create a ping for keepalive purposes.
-										// It will be acked, this ensures both sides don't timeout.
-										Message msg;
-										synchronized(this) {
-											msg = DMT.createFNPPing(pingCounter++);
-											timeLastSentPing = now;
-										}
-										item = new MessageItem(msg, null, null);
-										item.setDeadline(now + PacketSender.MAX_COALESCING_DELAY);
-									} else {
-										break prio;
+							item = messageQueue.grabQueuedMessageItem(i);
+							if(item == null) {
+								if(mustSendKeepalive && packet.noFragments()) {
+									// Create a ping for keepalive purposes.
+									// It will be acked, this ensures both sides don't timeout.
+									Message msg;
+									synchronized(this) {
+										msg = DMT.createFNPPing(pingCounter++);
 									}
+									item = new MessageItem(msg, null, null);
+									item.setDeadline(now + PacketSender.MAX_COALESCING_DELAY);
+									wasGeneratedPing = true;
+									// Should we report this on the PeerNode's stats? We'd need to run a job off-thread, so probably not worth it.
+								} else {
+									break prio;
 								}
 							}
 							
@@ -829,7 +809,12 @@ outer:
 								// This doesn't happen at the moment because we use a single PacketSender for all ports and all peers.
 								// We might in future split it across multiple threads but it'd be best to keep the same peer on the same thread.
 								Logger.error(this, "No availiable message ID, requeuing and sending packet (we already checked didn't we???)");
-								messageQueue.pushfrontPrioritizedMessageItem(item);
+								if(!wasGeneratedPing) {
+									messageQueue.pushfrontPrioritizedMessageItem(item);
+									// No point adding to queue if it's just a ping:
+									//  We will try again next time.
+									//  But odds are the connection is broken and the other side isn't responding...
+								}
 								break fragments;
 							}
 							
@@ -914,8 +899,11 @@ outer:
 	}
 	
 	private int pingCounter;
-	
-	static final int MAX_MESSAGE_SIZE = 2048;
+
+	/**
+	 * Maximum message size in bytes.
+	 */
+	public static final int MAX_MESSAGE_SIZE = 4096;
 	
 	private int maxSendBufferSize() {
 		return MAX_RECEIVE_BUFFER_SIZE;
@@ -1123,7 +1111,7 @@ outer:
 				if(blockedSince == -1) {
 					blockedSince = System.currentTimeMillis();
 				} else if(System.currentTimeMillis() - blockedSince > MAX_MSGID_BLOCK_TIME) {
-					throw new BlockedTooLongException(null, System.currentTimeMillis() - blockedSince);
+					throw new BlockedTooLongException(System.currentTimeMillis() - blockedSince);
 				}
 				return -1;
 			}
@@ -1144,8 +1132,8 @@ outer:
 	static class SentPacket {
 		final SessionKey sessionKey;
 		NewPacketFormat npf;
-		LinkedList<MessageWrapper> messages = new LinkedList<MessageWrapper>();
-		LinkedList<int[]> ranges = new LinkedList<int[]>();
+		List<MessageWrapper> messages = new ArrayList<MessageWrapper>();
+		List<int[]> ranges = new ArrayList<int[]>();
 		long sentTime;
 		int packetLength;
 
@@ -1219,7 +1207,6 @@ outer:
 		}
 
 		public void lost() {
-			int bytesToResend = 0;
 			Iterator<MessageWrapper> msgIt = messages.iterator();
 			Iterator<int[]> rangeIt = ranges.iterator();
 
@@ -1227,7 +1214,7 @@ outer:
 				MessageWrapper wrapper = msgIt.next();
 				int[] range = rangeIt.next();
 
-				bytesToResend += wrapper.lost(range[0], range[1]);
+				wrapper.lost(range[0], range[1]);
 			}
 		}
 
@@ -1288,9 +1275,7 @@ outer:
 				if(logDEBUG) Logger.debug(this, "Added " + (length - buffer.length) + " to buffer. Total is now " + npf.receiveBufferUsed);
 			}
 
-			byte[] newBuffer = new byte[length];
-			System.arraycopy(buffer, 0, newBuffer, 0, Math.min(length, buffer.length));
-			buffer = newBuffer;
+			buffer = Arrays.copyOf(buffer, length);
 
 			return true;
 		}

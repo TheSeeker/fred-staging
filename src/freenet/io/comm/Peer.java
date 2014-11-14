@@ -46,11 +46,6 @@ public class Peer implements WritableToDataOutputStream {
     private final FreenetInetAddress addr;
 	private final int _port;
 
-	// Create a null peer
-	public Peer() throws Exception {
-		this(InetAddress.getLocalHost(), 0);
-	}
-
 	public Peer(DataInput dis) throws IOException {
 		addr = new FreenetInetAddress(dis);
 		_port = dis.readInt();
@@ -277,5 +272,11 @@ public class Peer implements WritableToDataOutputStream {
 		if(addr != newAddr) {
 			return new Peer(newAddr, _port);
 		} else return this;
+	}
+
+	/** Is this peer using IPv6? */
+	public boolean isIPv6(boolean defaultValue) {
+		if(addr == null) return defaultValue;
+		return addr.isIPv6(defaultValue);
 	}
 }

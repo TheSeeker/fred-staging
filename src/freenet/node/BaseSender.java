@@ -1,5 +1,7 @@
 package freenet.node;
 
+import static java.util.concurrent.TimeUnit.MINUTES;
+
 import java.util.HashMap;
 import java.util.HashSet;
 
@@ -9,8 +11,6 @@ import freenet.io.comm.DisconnectedException;
 import freenet.io.comm.Message;
 import freenet.io.comm.MessageFilter;
 import freenet.io.comm.NotConnectedException;
-import freenet.io.comm.PeerContext;
-import freenet.io.comm.SlowAsyncMessageFilterCallback;
 import freenet.keys.Key;
 import freenet.keys.NodeCHK;
 import freenet.keys.NodeSSK;
@@ -19,9 +19,8 @@ import freenet.node.PeerNode.SlotWaiter;
 import freenet.node.PeerNode.SlotWaiterFailedException;
 import freenet.support.LogThresholdCallback;
 import freenet.support.Logger;
-import freenet.support.TimeUtil;
 import freenet.support.Logger.LogLevel;
-import freenet.support.io.NativeThread;
+import freenet.support.TimeUtil;
 
 /** Base class for request and insert senders.
  * Mostly concerned with what happens *before and up to* we get the Accepted.
@@ -48,8 +47,8 @@ public abstract class BaseSender implements ByteCounter {
     final Node node;
     protected final long startTime;
     long uid;
-    static final int SEARCH_TIMEOUT_BULK = 600*1000;
-    static final int SEARCH_TIMEOUT_REALTIME = 60*1000;
+    static final long SEARCH_TIMEOUT_BULK = MINUTES.toMillis(10);
+    static final long SEARCH_TIMEOUT_REALTIME = MINUTES.toMillis(1);
     final int incomingSearchTimeout;
     
     BaseSender(Key key, boolean realTimeFlag, PeerNode source, Node node, short htl, long uid) {
@@ -83,7 +82,7 @@ public abstract class BaseSender implements ByteCounter {
 	
 	private short hopsForTime(long time) {
 		double timeout = realTimeFlag ? SEARCH_TIMEOUT_REALTIME : SEARCH_TIMEOUT_BULK;
-		double timePerHop = timeout / ((double)EXTRA_HOPS_AT_BOTTOM + (double) node.maxHTL());
+		double timePerHop = timeout / (EXTRA_HOPS_AT_BOTTOM + node.maxHTL());
 		return (short) Math.min(node.maxHTL(), time / timePerHop);
 	}
 
@@ -221,7 +220,7 @@ loadWaiterLoop:
      * us to stop routing, only to stop adding more nodes to wait for while
      * waiting. This is particularly an issue if we have a fast network connected
      * to a slow network. */
-    private static int MAX_REJECTED_LOOPS = 3;
+    private static final int MAX_REJECTED_LOOPS = 3;
 
     private boolean addedExtraNode = false;
     
@@ -706,7 +705,7 @@ loadWaiterLoop:
 		return msg.getSpec() == DMT.FNPAccepted;
 	}
 
-	protected abstract int getAcceptedTimeout();
+	protected abstract long getAcceptedTimeout();
 	
 	/** We timed out while waiting for a slot from any node. Fail the request.
 	 * @param load The proportion of requests getting timed out, on average,
@@ -731,13 +730,13 @@ loadWaiterLoop:
 	 * we need to use the old tag.
 	 */
 	protected abstract MessageFilter makeAcceptedRejectedFilter(PeerNode next,
-			int acceptedTimeout, UIDTag tag);
+			long acceptedTimeout, UIDTag tag);
 	
 	protected abstract void forwardRejectedOverload();
 	
 	protected abstract boolean isInsert();
 	
-	protected int ignoreLowBackoff() {
+	protected long ignoreLowBackoff() {
 		return 0;
 	}
 	

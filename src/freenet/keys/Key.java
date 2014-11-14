@@ -11,8 +11,6 @@ import java.io.OutputStream;
 import java.security.MessageDigest;
 import java.util.Arrays;
 
-import com.db4o.ObjectContainer;
-
 import freenet.crypt.CryptFormatException;
 import freenet.crypt.DSAPublicKey;
 import freenet.crypt.SHA256;
@@ -35,8 +33,10 @@ import freenet.support.io.BucketTools;
  * @author amphibian
  *
  * Base class for node keys.
+ * 
+ * WARNING: Changing non-transient members on classes that are Serializable can result in 
+ * restarting downloads or losing uploads.
  */
-// WARNING: THIS CLASS IS STORED IN DB4O -- THINK TWICE BEFORE ADD/REMOVE/RENAME FIELDS
 public abstract class Key implements WritableToDataOutputStream, Comparable<Key> {
 
     final int hash;
@@ -46,6 +46,7 @@ public abstract class Key implements WritableToDataOutputStream, Comparable<Key>
 
     /** Code for 256-bit AES with PCFB and SHA-256 */
     public static final byte ALGO_AES_PCFB_256_SHA256 = 2;
+    public static final byte ALGO_AES_CTR_256_SHA256 = 3;
 
     private static volatile boolean logMINOR;
     static {
@@ -85,7 +86,7 @@ public abstract class Key implements WritableToDataOutputStream, Comparable<Key>
      * @param raf The file to read from.
      * @return a Key, or throw an exception, or return null if the key is not parsable.
      */
-    public static final Key read(DataInput raf) throws IOException {
+    public static Key read(DataInput raf) throws IOException {
     	byte type = raf.readByte();
     	byte subtype = raf.readByte();
         if(type == NodeCHK.BASE_TYPE) {
@@ -100,7 +101,8 @@ public abstract class Key implements WritableToDataOutputStream, Comparable<Key>
 		byte type = (byte)(keyType >> 8);
 		byte subtype = (byte)(keyType & 0xFF);
 		if(type == NodeCHK.BASE_TYPE) {
-			return CHKBlock.construct(dataBytes, headersBytes);
+			// For CHKs, the subtype is the crypto algorithm.
+			return CHKBlock.construct(dataBytes, headersBytes, subtype);
 		} else if(type == NodeSSK.BASE_TYPE) {
 			DSAPublicKey pubKey;
 			try {
@@ -163,21 +165,24 @@ public abstract class Key implements WritableToDataOutputStream, Comparable<Key>
     	return Arrays.equals(routingKey, ((Key)o).routingKey);
     }
 
-    static Bucket decompress(boolean isCompressed, byte[] output, int outputLength, BucketFactory bf, long maxLength, short compressionAlgorithm, boolean shortLength) throws CHKDecodeException, IOException {
+    static Bucket decompress(boolean isCompressed, byte[] input, int inputLength, BucketFactory bf, long maxLength, short compressionAlgorithm, boolean shortLength) throws CHKDecodeException, IOException {
 	    if(maxLength < 0)
 		    throw new IllegalArgumentException("maxlength="+maxLength);
+		if(input.length < inputLength)
+			throw new IndexOutOfBoundsException(""+input.length+"<"+inputLength);
         if(isCompressed) {
         	if(logMINOR)
-        		Logger.minor(Key.class, "Decompressing "+output.length+" bytes in decode with codec "+compressionAlgorithm);
-            if(output.length < (shortLength ? 3 : 5)) throw new CHKDecodeException("No bytes to decompress");
+        		Logger.minor(Key.class, "Decompressing "+inputLength+" bytes in decode with codec "+compressionAlgorithm);
+			final int inputOffset = (shortLength ? 2 : 4);
+            if(inputLength < inputOffset + 1) throw new CHKDecodeException("No bytes to decompress");
             // Decompress
             // First get the length
             int len;
             if(shortLength)
-            	len = ((output[0] & 0xff) << 8) + (output[1] & 0xff);
+            	len = ((input[0] & 0xff) << 8) + (input[1] & 0xff);
             else
-            	len = ((((((output[0] & 0xff) << 8) + (output[1] & 0xff)) << 8) + (output[2] & 0xff)) << 8) +
-            		(output[3] & 0xff);
+            	len = ((((((input[0] & 0xff) << 8) + (input[1] & 0xff)) << 8) + (input[2] & 0xff)) << 8) +
+            		(input[3] & 0xff);
             if(len > maxLength)
                 throw new TooBigException("Invalid precompressed size: "+len + " maxlength="+maxLength);
             COMPRESSOR_TYPE decompressor = COMPRESSOR_TYPE.getCompressorByMetadataID(compressionAlgorithm);
@@ -185,7 +190,7 @@ public abstract class Key implements WritableToDataOutputStream, Comparable<Key>
             	throw new CHKDecodeException("Unknown compression algorithm: "+compressionAlgorithm);
             InputStream inputStream = null;
             OutputStream outputStream = null;
-            Bucket inputBucket = new SimpleReadOnlyArrayBucket(output, shortLength?2:4, outputLength-(shortLength?2:4));
+            Bucket inputBucket = new SimpleReadOnlyArrayBucket(input, inputOffset, inputLength-inputOffset);
             Bucket outputBucket = bf.makeBucket(maxLength);
             outputStream = outputBucket.getOutputStream();
             inputStream = inputBucket.getInputStream();
@@ -193,13 +198,14 @@ public abstract class Key implements WritableToDataOutputStream, Comparable<Key>
             	decompressor.decompress(inputStream, outputStream, maxLength, -1);
 			}  catch (CompressionOutputSizeException e) {
 				throw new TooBigException("Too big");
-			}
+			} finally {
             inputStream.close();
             outputStream.close();
             inputBucket.free();
+			}
             return outputBucket;
         } else {
-        	return BucketTools.makeImmutableBucket(bf, output, outputLength);
+        	return BucketTools.makeImmutableBucket(bf, input, inputLength);
         }
 	}
 
@@ -320,13 +326,14 @@ public abstract class Key implements WritableToDataOutputStream, Comparable<Key>
 	/** Get the full key, including any crypto type bytes, everything needed to construct a Key object */
 	public abstract byte[] getFullKey();
 
-	public void removeFrom(ObjectContainer container) {
-		container.delete(this);
-	}
-
 	/** Get a copy of the key with any unnecessary information stripped, for long-term
 	 * in-memory storage. E.g. for SSKs, strips the DSAPublicKey. Copies it whether or
 	 * not we need to copy it because the original might pick up a pubkey after this
 	 * call. And the returned key will not accidentally pick up extra data. */
 	public abstract Key archivalCopy();
+
+    public static boolean isValidCryptoAlgorithm(byte cryptoAlgorithm) {
+        return cryptoAlgorithm == ALGO_AES_PCFB_256_SHA256 ||
+            cryptoAlgorithm == ALGO_AES_CTR_256_SHA256;
+    }
 }

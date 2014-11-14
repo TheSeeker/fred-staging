@@ -3,6 +3,9 @@
  * http://www.gnu.org/ for further details of the GPL. */
 package freenet.clients.http;
 
+import static java.util.concurrent.TimeUnit.HOURS;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.text.ParseException;
@@ -15,7 +18,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import freenet.support.CurrentTimeUTC;
-import freenet.support.LRUHashtable;
+import freenet.support.LRUMap;
 import freenet.support.Logger;
 import freenet.support.StringValidityChecker;
 
@@ -52,7 +55,7 @@ public final class SessionManager {
 	/**
 	 * The amount of milliseconds after which a session is deleted due to expiration.
 	 */
-	public static final long MAX_SESSION_IDLE_TIME = 1 * 60 * 60 * 1000;
+	public static final long MAX_SESSION_IDLE_TIME = HOURS.toMillis(1);
 	
 	public static final String SESSION_COOKIE_NAME = "SessionID"; 
 	
@@ -127,8 +130,9 @@ public final class SessionManager {
 		
 		@Override
 		public boolean equals(Object obj) {
+			if(obj == null) return false;
+			if(!(obj instanceof Session)) return false;
 			Session other = ((Session)obj);
-			
 			return other.getID().equals(mID);
 		}
 		
@@ -216,7 +220,7 @@ public final class SessionManager {
 
 	}
 
-	private final LRUHashtable<UUID, Session> mSessionsByID = new LRUHashtable<UUID, Session>();
+	private final LRUMap<UUID, Session> mSessionsByID = new LRUMap<UUID, Session>();
 	private final Hashtable<String, Session> mSessionsByUserID = new Hashtable<String, Session>();
 	
 	
@@ -248,7 +252,7 @@ public final class SessionManager {
 	 */
 	public synchronized Session createSession(String userID, ToadletContext context) {
 		// We must synchronize around the fetching of the time and mSessionsByID.push() because mSessionsByID is no sorting data structure: It's a plain
-		// LRUHashtable so to ensure that it stays sorted the operation "getTime(); push();" must be atomic.
+		// LRUMap so to ensure that it stays sorted the operation "getTime(); push();" must be atomic.
 		long time = CurrentTimeUTC.getInMillis();
 		
 		removeExpiredSessions(time);
@@ -295,7 +299,7 @@ public final class SessionManager {
 			return null;
 		
 		// We must synchronize around the fetching of the time and mSessionsByID.push() because mSessionsByID is no sorting data structure: It's a plain
-		// LRUHashtable so to ensure that it stays sorted the operation "getTime(); push();" must be atomic.
+		// LRUMap so to ensure that it stays sorted the operation "getTime(); push();" must be atomic.
 		long time = CurrentTimeUTC.getInMillis();
 		
 		removeExpiredSessions(time);
@@ -418,7 +422,7 @@ public final class SessionManager {
 			Session session = sessions.nextElement();
 			
 			if(session.getExpirationTime() < previousTime) {
-				long sessionAge = (CurrentTimeUTC.getInMillis() - session.getExpirationTime()) / (60 * 60 * 1000);
+				long sessionAge = HOURS.convert(CurrentTimeUTC.getInMillis() - session.getExpirationTime(), MILLISECONDS);
 				Logger.error(this, "Session LRU queue out of order! Found session which is " + sessionAge + " hour old: " + session); 
 				Logger.error(this, "Deleting all sessions...");
 				

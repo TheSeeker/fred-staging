@@ -15,12 +15,23 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.io.UnsupportedEncodingException;
 import java.lang.reflect.Method;
 import java.nio.CharBuffer;
 import java.nio.charset.Charset;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.Random;
 
+import org.bouncycastle.crypto.BufferedBlockCipher;
+import org.bouncycastle.crypto.engines.AESFastEngine;
+import org.bouncycastle.crypto.io.CipherInputStream;
+import org.bouncycastle.crypto.modes.SICBlockCipher;
+import org.bouncycastle.crypto.params.KeyParameter;
+import org.bouncycastle.crypto.params.ParametersWithIV;
+
 import freenet.client.DefaultMIMETypes;
+import freenet.node.NodeStarter;
 import freenet.support.LogThresholdCallback;
 import freenet.support.Logger;
 import freenet.support.SizeUtil;
@@ -29,21 +40,85 @@ import freenet.support.Logger.LogLevel;
 
 final public class FileUtil {
 
-	private static final int BUFFER_SIZE = 32*1024;
+	public static final int BUFFER_SIZE = 32*1024;
+
+	/**
+	 * Returns a line reading stream for the content of <code>logfile</code>. The stream will
+	 * contain at most <code>byteLimit</code> bytes. If <code>byteLimit</code> is less than the
+	 * size of <code>logfile</code>, the first part of the file will be skipped. If this leaves a
+	 * partial line at the beginning of the content to read, that partial line will also be
+	 * skipped.
+	 * @param logfile The file to open
+	 * @param byteLimit The maximum number of bytes to read
+	 * @return A line reader for the trailing portion of the file
+	 * @throws java.io.IOException if an I/O error occurs
+	 */
+	public static LineReadingInputStream getLogTailReader(File logfile, long byteLimit) throws IOException {
+	    long length = logfile.length();
+	    long skip = 0;
+	    if (length > byteLimit) {
+	        skip = length - byteLimit;
+	    }
+
+	    FileInputStream fis = null;
+	    LineReadingInputStream lis = null;
+	    try {
+	        fis = new FileInputStream(logfile);
+	        lis = new LineReadingInputStream(fis);
+	        if (skip > 0) {
+	            lis.skip(skip);
+	            lis.readLine(100000, 200, true);
+	        }
+	    } catch (IOException e) {
+	        Closer.close(lis);
+	        Closer.close(fis);
+	        throw e;
+	    }
+	    return lis;
+	}
 
 	public static enum OperatingSystem {
-		All,
-		MacOS,
-		Unix,
-		Windows
+		Unknown(false, false, false), // Special-cased in filename sanitising code.
+		MacOS(false, true, true), // OS/X in that it can run scripts.
+		Linux(false, false, true),
+		FreeBSD(false, false, true),
+		GenericUnix(false, false, true),
+		Windows(true, false, false);
+		
+		public final boolean isWindows;
+		public final boolean isMac;
+		public final boolean isUnix;
+		OperatingSystem(boolean win, boolean mac, boolean unix) {
+			this.isWindows = win;
+			this.isMac = mac;
+			this.isUnix = unix;
+		};
 	};
+	
+	public static enum CPUArchitecture {
+	    Unknown,
+	    X86,
+	    X86_64,
+	    PPC_32,
+	    PPC_64,
+	    ARM,
+	    SPARC,
+	    IA64
+	}
 
-	private static final OperatingSystem detectedOS;
+	public static final OperatingSystem detectedOS;
+	
+	/** Caveat: Sometimes this may not be entirely accurate, e.g. we may not be able to distinguish
+	 * 32-bit from 64-bit, we may be using the wrong JVM for the platform, we may be using an x86 
+	 * wrapper or JVM on an IA64 system etc. This *should* be the version the JVM is running. */
+	public static final CPUArchitecture detectedArch;
 
 	private static final Charset fileNameCharset;
 
 	static {
 		detectedOS = detectOperatingSystem();
+		
+		detectedArch = detectCPUArchitecture();
 
 		// I did not find any way to detect the Charset of the file system so I'm using the file encoding charset.
 		// On Windows and Linux this is set based on the users configured system language which is probably equal to the filename charset.
@@ -63,10 +138,10 @@ final public class FileUtil {
 	}
 
 	/**
-	 * Detects the operating system in which the JVM is running. Returns OperatingSystem.All if the OS is unknown or an error occured.
+	 * Detects the operating system in which the JVM is running. Returns OperatingSystem.Unknown if the OS is unknown or an error occured.
 	 * Therefore this function should never throw.
 	 */
-	private static final OperatingSystem detectOperatingSystem() { // TODO: Move to the proper class
+	private static OperatingSystem detectOperatingSystem() { // TODO: Move to the proper class
 		try {
 			final String name =  System.getProperty("os.name").toLowerCase();
 
@@ -80,15 +155,48 @@ final public class FileUtil {
 			if(name.indexOf("mac") >= 0)
 				return OperatingSystem.MacOS;
 
-			if(name.indexOf("unix") >= 0 || name.indexOf("linux") >= 0 || name.indexOf("freebsd") >= 0)
-				return OperatingSystem.Unix;
+			if(name.indexOf("linux") >= 0)
+				return OperatingSystem.Linux;
+			
+			if(name.indexOf("freebsd") >= 0)
+				return OperatingSystem.FreeBSD;
+			
+			if(name.indexOf("unix") >= 0)
+				return OperatingSystem.GenericUnix;
+			else if(File.separatorChar == '/')
+				return OperatingSystem.GenericUnix;
+			else if(File.separatorChar == '\\')
+				return OperatingSystem.Windows;
 
 			Logger.error(FileUtil.class, "Unknown operating system:" + name);
 		} catch(Throwable t) {
 			Logger.error(FileUtil.class, "Operating system detection failed", t);
 		}
 
-		return OperatingSystem.All;
+		return OperatingSystem.Unknown;
+	}
+	
+	private static CPUArchitecture detectCPUArchitecture() { // TODO Move to the proper class
+	    try {
+	        final String name = System.getProperty("os.arch").toLowerCase();
+	        if(name.equals("x86") || name.equals("i386") || name.matches("i[3-9]86"))
+	            return CPUArchitecture.X86;
+	        if(name.equals("amd64") || name.equals("x86-64") || name.equals("x86_64") ||
+	                name.equals("x86") || name.equals("em64t") || name.equals("x8664") ||
+	                name.equals("8664"))
+	            return CPUArchitecture.X86_64;
+	        if(name.startsWith("arm"))
+	            return CPUArchitecture.ARM; // FIXME arm64 support?
+	        if(name.equals("ppc") || name.equals("powerpc"))
+	            return CPUArchitecture.PPC_32;
+	        if(name.equals("ppc64"))
+	            return CPUArchitecture.PPC_64;
+	        if(name.startsWith("ia64"))
+	            return CPUArchitecture.IA64;
+	    } catch (Throwable t) {
+	        Logger.error(FileUtil.class, "CPU architecture detection failed", t);
+	    }
+	    return CPUArchitecture.Unknown;
 	}
 
 	/**
@@ -97,7 +205,7 @@ final public class FileUtil {
 	 *
 	 * If any error occurs, the default Charset is returned. Therefore this function should never throw.
 	 */
-	public static final Charset getFileEncodingCharset() {
+	public static Charset getFileEncodingCharset() {
 		try {
 			return Charset.forName(System.getProperty("file.encoding"));
 		} catch(Throwable t) {
@@ -107,7 +215,7 @@ final public class FileUtil {
 
 
 	/** Round up a value to the next multiple of a power of 2 */
-	private static final long roundup_2n (long val, int blocksize) {
+	private static long roundup_2n (long val, int blocksize) {
 		int mask=blocksize-1;
 		return (val+mask)&~mask;
 	}
@@ -124,7 +232,13 @@ final public class FileUtil {
 		long blockUsage = roundup_2n(flen, 4096);
 		// Assume 512 byte filename entries, with 100 bytes overhead, for filename overhead (NTFS)
 		String filename = file.getName();
-		int nameLength = filename.getBytes().length + 100;
+		int nameLength;
+		try {
+			nameLength = Math.max(filename.getBytes("UTF-16").length, filename.getBytes("UTF-8").length) + 100;
+		} catch (UnsupportedEncodingException e) {
+			// Impossible.
+			throw new RuntimeException("UTF-16 or UTF-8 charset not supported?!");
+		} 
 		long filenameUsage = roundup_2n(nameLength, 512);
 		// Assume 50 bytes per block tree overhead with 1kB blocks (reiser3 worst case)
 		long extra = (roundup_2n(flen, 1024) / 1024) * 50;
@@ -175,11 +289,26 @@ final public class FileUtil {
 		return result;
 	}
 
-        public static String readUTF(File file) throws FileNotFoundException, IOException {
-            return readUTF(file, 0);
-        }
+    /**
+     * Reads the entire content of a file as UTF-8 and returns it.
+     * @param file The file to read
+     * @return The content of <code>file</code>
+     * @throws FileNotFoundException if <code>file</code> cannot be opened
+     * @throws IOException if an I/O error occurs
+     */
+    public static StringBuilder readUTF(File file) throws FileNotFoundException, IOException {
+        return readUTF(file, 0);
+    }
 
-	public static String readUTF(File file, long offset) throws FileNotFoundException, IOException {
+    /**
+     * Reads the content of a file as UTF-8, starting at a specified offset, and returns it.
+     * @param file The file to read
+     * @param offset The point in <code>file</code> at which to start reading
+     * @return The content of <code>file</code>, starting at <code>offset</code>
+     * @throws FileNotFoundException if <code>file</code> cannot be opened
+     * @throws IOException if an I/O error occurs
+     */
+	public static StringBuilder readUTF(File file, long offset) throws FileNotFoundException, IOException {
 		StringBuilder result = new StringBuilder();
 		FileInputStream fis = null;
 		BufferedInputStream bis = null;
@@ -203,7 +332,41 @@ final public class FileUtil {
 			Closer.close(bis);
 			Closer.close(fis);
 		}
-		return result.toString();
+		return result;
+	}
+	
+	/**
+	 * Reads the entire content of a stream as UTF-8 and returns it.
+	 * @param stream The stream to read
+	 * @return The content of <code>stream</code>
+	 * @throws IOException if an I/O error occurs
+	 */
+	public static StringBuilder readUTF(InputStream stream) throws IOException {
+	    return readUTF(stream, 0);
+	}
+	
+	/**
+	 * Reads the content of a stream as UTF-8, starting at a specified offset, and returns it.
+	 * @param stream The stream to read
+	 * @param offset The point in <code>stream</code> at which to start reading
+	 * @return The content of <code>stream</code>, starting at <code>offset</code>
+	 * @throws IOException if an I/O error occurs
+	 */
+	public static StringBuilder readUTF(InputStream stream, long offset) throws IOException {
+	    StringBuilder result = new StringBuilder();
+	    skipFully(stream, offset);
+	    InputStreamReader reader = null;
+	    try {
+	        reader = new InputStreamReader(stream, "UTF-8");
+	        char[] buf = new char[4096];
+	        int length = 0;
+	        while((length = reader.read(buf)) > 0) {
+	            result.append(buf, 0, length);
+	        }
+	    } finally {
+	        Closer.close(reader);
+	    }
+	    return result;
 	}
 
 	/**
@@ -297,36 +460,14 @@ final public class FileUtil {
             		return false;
             	}
             }
-    		if(!orig.renameTo(dest)) {
-    			// Copy the data
-    			InputStream is = null;
-    			OutputStream os = null;
-    			try {
-    				is = new FileInputStream(orig);
-    				os = new FileOutputStream(dest);
-    				copy(is, os, orig.length());
-    				is.close();
-    				is = null;
-    				os.close();
-    				os = null;
-    				orig.delete();
-    				return true;
-    			} catch (IOException e) {
-    				dest.delete();
-    				Logger.error(FileUtil.class, "Move failed from "+orig+" to "+dest+" : "+e, e);
-    				System.err.println("Move failed from "+orig+" to "+dest+" : "+e);
-    				e.printStackTrace();
-    				return false;
-    			} finally {
-    				Closer.close(is);
-    				Closer.close(os);
-    			}
-    		} else return true;
+    		if(!orig.renameTo(dest))
+    		    return copyFile(orig, dest);
+    		else return true;
     	}
 
     /**
      * Sanitizes the given filename to be valid on the given operating system.
-     * If OperatingSystem.All is specified this function will generate a filename which fullfils the restrictions of all known OS, currently
+     * If OperatingSystem.Unknown is specified this function will generate a filename which fullfils the restrictions of all known OS, currently
      * this is MacOS, Unix and Windows.
      */
 	public static String sanitizeFileName(final String fileName, OperatingSystem targetOS, String extraChars) {
@@ -336,13 +477,15 @@ final public class FileUtil {
 		final StringBuilder sb = new StringBuilder(fileName.length() + 1);
 
 		switch(targetOS) {
-			case All: break;
+			case Unknown: break;
 			case MacOS: break;
-			case Unix: break;
+			case Linux: break;
+			case FreeBSD: break;
+			case GenericUnix: break;
 			case Windows: break;
 			default:
 				Logger.error(FileUtil.class, "Unsupported operating system: " + targetOS);
-				targetOS = OperatingSystem.All;
+				targetOS = OperatingSystem.Unknown;
 				break;
 		}
 		
@@ -356,7 +499,7 @@ final public class FileUtil {
 			}
 		}
 
-		for(char c : buffer.array()) {
+		for(char c : buffer.array()) { // Note that this will add extra whitespace to the end, which we will trim later.
 			
 			if(extraChars.indexOf(c) != -1) {
 				sb.append(def);
@@ -371,21 +514,21 @@ final public class FileUtil {
 			}
 
 
-			if(targetOS == OperatingSystem.All || targetOS == OperatingSystem.Windows) {
+			if(targetOS == OperatingSystem.Unknown || targetOS.isWindows) {
 				if(StringValidityChecker.isWindowsReservedPrintableFilenameCharacter(c)) {
 					sb.append(def);
 					continue;
 				}
 			}
 
-			if(targetOS == OperatingSystem.All || targetOS == OperatingSystem.MacOS) {
+			if(targetOS == OperatingSystem.Unknown || targetOS.isMac) {
 				if(StringValidityChecker.isMacOSReservedPrintableFilenameCharacter(c)) {
 					sb.append(def);
 					continue;
 				}
 			}
 			
-			if(targetOS == OperatingSystem.All || targetOS == OperatingSystem.Unix) {
+			if(targetOS == OperatingSystem.Unknown || targetOS.isUnix) {
 				if(StringValidityChecker.isUnixReservedPrintableFilenameCharacter(c)) {
 					sb.append(def);
 					continue;
@@ -397,7 +540,7 @@ final public class FileUtil {
 		}
 
 		// In windows, the last character of a filename may not be space or dot. We cut them off
-		if(targetOS == OperatingSystem.All || targetOS == OperatingSystem.Windows) {
+		if(targetOS == OperatingSystem.Unknown || targetOS.isWindows) {
 			int lastCharIndex = sb.length() - 1;
 			while(lastCharIndex >= 0) {
 				char lastChar = sb.charAt(lastCharIndex);
@@ -409,7 +552,7 @@ final public class FileUtil {
 		}
 
 		// Now the filename might be one of the reserved filenames in Windows (CON etc.) and we must replace it if it is...
-		if(targetOS == OperatingSystem.All || targetOS == OperatingSystem.Windows) {
+		if(targetOS == OperatingSystem.Unknown || targetOS.isWindows) {
 			if(StringValidityChecker.isWindowsReservedFilename(sb.toString()))
 				sb.insert(0, '_');
 		}
@@ -418,7 +561,8 @@ final public class FileUtil {
 			sb.append("Invalid filename"); // TODO: L10n
 		}
 
-		return sb.toString();
+		return sb.toString().trim(); // Trim leading and trailing whitespace.
+		// Some of the trailing whitespace may be from the CharBuffer.
 	}
 
 	public static String sanitize(String fileName) {
@@ -433,13 +577,7 @@ final public class FileUtil {
 	public static String sanitize(String filename, String mimeType) {
 		filename = sanitize(filename);
 		if(mimeType == null) return filename;
-		if(filename.indexOf('.') >= 0) {
-			String oldExt = filename.substring(filename.lastIndexOf('.'));
-			if(DefaultMIMETypes.isValidExt(mimeType, oldExt)) return filename;
-		}
-		String defaultExt = DefaultMIMETypes.getExtension(filename);
-		if(defaultExt == null) return filename;
-		else return filename + '.' + defaultExt;
+		return DefaultMIMETypes.forceExtension(filename, mimeType);
 	}
 
 	/**
@@ -500,19 +638,18 @@ final public class FileUtil {
 		}
 	}
 	
-	public static boolean secureDeleteAll(File wd, Random random) throws IOException {
+	public static boolean secureDeleteAll(File wd) throws IOException {
 		if(!wd.isDirectory()) {
 			System.err.println("DELETING FILE "+wd);
 			try {
-				secureDelete(wd, random);
+				secureDelete(wd);
 			} catch (IOException e) {
 				Logger.error(FileUtil.class, "Could not delete file: "+wd, e);
 				return false;
 			}
 		} else {
-			File[] subfiles = wd.listFiles();
-			for(int i=0;i<subfiles.length;i++) {
-				if(!removeAll(subfiles[i])) return false;
+			for(File subfile: wd.listFiles()) {
+				if(!removeAll(subfile)) return false;
 			}
 			if(!wd.delete()) {
 				Logger.error(FileUtil.class, "Could not delete directory: "+wd);
@@ -532,9 +669,8 @@ final public class FileUtil {
 				return false;
 			}
 		} else {
-			File[] subfiles = wd.listFiles();
-			for(int i=0;i<subfiles.length;i++) {
-				if(!removeAll(subfiles[i])) return false;
+			for(File subfile: wd.listFiles()) {
+				if(!removeAll(subfile)) return false;
 			}
 			if(!wd.delete()) {
 				Logger.error(FileUtil.class, "Could not delete directory: "+wd);
@@ -542,8 +678,8 @@ final public class FileUtil {
 		}
 		return true;
 	}
-
-	public static void secureDelete(File file, Random random) throws IOException {
+	
+	public static void secureDelete(File file) throws IOException {
 		// FIXME somebody who understands these things should have a look at this...
 		if(!file.exists()) return;
 		long size = file.length();
@@ -552,48 +688,10 @@ final public class FileUtil {
 			try {
 				System.out.println("Securely deleting "+file+" which is of length "+size+" bytes...");
 				raf = new RandomAccessFile(file, "rw");
-				raf.seek(0);
 				long count;
-				byte[] buf = new byte[4096];
-				// First zero it out
-				count = 0;
-				while(count < size) {
-					int written = (int) Math.min(buf.length, size - count);
-					raf.write(buf, 0, written);
-					count += written;
-				}
-				raf.getFD().sync();
-				// Then ffffff it out
-				for(int i=0;i<buf.length;i++)
-					buf[i] = (byte)0xFF;
+				// Random data first.
 				raf.seek(0);
-				count = 0;
-				while(count < size) {
-					int written = (int) Math.min(buf.length, size - count);
-					raf.write(buf, 0, written);
-					count += written;
-				}
-				raf.getFD().sync();
-				// Then random data
-				random.nextBytes(buf);
-				raf.seek(0);
-				count = 0;
-				while(count < size) {
-					int written = (int) Math.min(buf.length, size - count);
-					raf.write(buf, 0, written);
-					count += written;
-				}
-				raf.getFD().sync();
-				raf.seek(0);
-				// Then 0's again
-				for(int i=0;i<buf.length;i++)
-					buf[i] = 0;
-				count = 0;
-				while(count < size) {
-					int written = (int) Math.min(buf.length, size - count);
-					raf.write(buf, 0, written);
-					count += written;
-				}
+				fill(new RandomAccessFileOutputStream(raf), size);
 				raf.getFD().sync();
 				raf.close();
 				raf = null;
@@ -605,29 +703,11 @@ final public class FileUtil {
 			throw new IOException("Unable to delete file "+file);
 	}
 
-	public static final long getFreeSpace(File dir) {
-		// Use JNI to find out the free space on this partition.
-		long freeSpace = -1;
-		try {
-			Class<? extends File> c = dir.getClass();
-			Method m = c.getDeclaredMethod("getFreeSpace", new Class<?>[0]);
-			if(m != null) {
-				Long lFreeSpace = (Long) m.invoke(dir, new Object[0]);
-				if(lFreeSpace != null) {
-					freeSpace = lFreeSpace.longValue();
-					System.err.println("Found free space on node's partition: on " + dir + " = " + SizeUtil.formatSize(freeSpace));
-				}
-			}
-		} catch(NoSuchMethodException e) {
-			// Ignore
-			freeSpace = -1;
-		} catch(Throwable t) {
-			System.err.println("Trying to access 1.6 getFreeSpace(), caught " + t);
-			freeSpace = -1;
-		}
-		return freeSpace;
-	}
-
+	/** @Deprecated */
+    public static void secureDelete(File file, Random random) throws IOException {
+        secureDelete(file);
+    }
+    
 	/**
 	** Set owner-only RW on the given file.
 	*/
@@ -685,9 +765,113 @@ final public class FileUtil {
 	}
 
 	public static boolean equals(File a, File b) {
+	    if(a == b) return true;
+	    if(a.equals(b)) return true;
 		a = getCanonicalFile(a);
 		b = getCanonicalFile(b);
 		return a.equals(b);
 	}
+
+	/** Create a temp file in a specific directory. Null = ".". 
+	 * @throws IOException */
+	public static File createTempFile(String prefix, String suffix,
+			File directory) throws IOException {
+		if(directory == null) directory = new File(".");
+		return File.createTempFile(prefix, suffix, directory);
+	}
+
+	public static boolean copyFile(File copyFrom, File copyTo) {
+		copyTo.delete();
+		boolean executable = copyFrom.canExecute();
+		FileBucket outBucket = new FileBucket(copyTo, false, true, false, false);
+		FileBucket inBucket = new FileBucket(copyFrom, true, false, false, false);
+		try {
+			BucketTools.copy(inBucket, outBucket);
+			if(executable) {
+			    if(!(copyTo.setExecutable(true) || copyTo.canExecute())) {
+			        System.err.println("Unable to preserve executable bit when copying "+copyFrom+" to "+copyTo+" - you may need to make it executable!");
+			        // return false; ??? FIXME debatable.
+			    }
+			}
+			return true;
+		} catch (IOException e) {
+			System.err.println("Unable to copy from "+copyFrom+" to "+copyTo);
+			return false;
+		}
+	}
+	
+	private static CipherInputStream cis;
+	private static ZeroInputStream zis = new ZeroInputStream();
+	private static long cisCounter;
+	
+	/** Write hard to identify random data to the OutputStream. Does not drain the global secure 
+	 * random number generator, and is significantly faster than it.
+	 * @param os The stream to write to.
+	 * @param length The number of bytes to write.
+	 * @throws IOException If unable to write to the stream.
+	 */
+	public static void fill(OutputStream os, long length) throws IOException {
+	    long remaining = length;
+	    byte[] buffer = new byte[BUFFER_SIZE];
+	    int read = 0;
+	    while ((remaining == -1) || (remaining > 0)) {
+	        synchronized(FileUtil.class) {
+	            if(cis == null || cisCounter > Long.MAX_VALUE/2) {
+	                // Reset it well before the birthday paradox (note this is actually counting bytes).
+	                byte[] key = new byte[16];
+	                byte[] iv = new byte[16];
+	                SecureRandom rng = NodeStarter.getGlobalSecureRandom();
+	                rng.nextBytes(key);
+	                rng.nextBytes(iv);
+	                AESFastEngine e = new AESFastEngine();
+	                SICBlockCipher ctr = new SICBlockCipher(e);
+	                ctr.init(true, new ParametersWithIV(new KeyParameter(key),iv));
+	                cis = new CipherInputStream(zis, new BufferedBlockCipher(ctr));
+	                cisCounter = 0;
+	            }
+	            read = cis.read(buffer, 0, ((remaining > BUFFER_SIZE) || (remaining == -1)) ? BUFFER_SIZE : (int) remaining);
+	            cisCounter += read;
+	        }
+	        if (read == -1) {
+	            if (length == -1) {
+	                return;
+	            }
+	            throw new EOFException("stream reached eof");
+	        }
+	        os.write(buffer, 0, read);
+	        if (remaining > 0)
+	            remaining -= read;
+	    }
+	    
+	}
+
+	/** @deprecated */
+    public static void fill(OutputStream os, Random random, long length) throws IOException {
+        long moved = 0;
+        byte[] buf = new byte[BUFFER_SIZE];
+        while(moved < length) {
+            int toRead = (int)Math.min(BUFFER_SIZE, length - moved);
+            random.nextBytes(buf);
+            os.write(buf, 0, toRead);
+            moved += toRead;
+        }
+    }
+
+    public static boolean equalStreams(InputStream a, InputStream b, long size) throws IOException {
+        byte[] aBuffer = new byte[BUFFER_SIZE];
+        byte[] bBuffer = new byte[BUFFER_SIZE];
+        DataInputStream aIn = new DataInputStream(a);
+        DataInputStream bIn = new DataInputStream(b);
+        long checked = 0;
+        while(checked < size) {
+            int toRead = (int)Math.min(BUFFER_SIZE, size - checked);
+            aIn.readFully(aBuffer, 0, toRead);
+            bIn.readFully(bBuffer, 0, toRead);
+            if(!MessageDigest.isEqual(aBuffer, bBuffer))
+                return false;
+            checked += toRead;
+        }
+        return true;
+    }
 
 }

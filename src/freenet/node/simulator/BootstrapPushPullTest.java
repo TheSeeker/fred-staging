@@ -21,7 +21,7 @@ import freenet.support.PooledExecutor;
 import freenet.support.TimeUtil;
 import freenet.support.Logger.LogLevel;
 import freenet.support.LoggerHook.InvalidThresholdException;
-import freenet.support.api.Bucket;
+import freenet.support.api.RandomAccessBucket;
 import freenet.support.io.FileUtil;
 
 public class BootstrapPushPullTest {
@@ -72,8 +72,9 @@ public class BootstrapPushPullTest {
 			System.exit(EXIT_FAILED_TARGET);
 		}
         System.err.println("Creating test data: "+TEST_SIZE+" bytes.");
-        Bucket data = node.clientCore.tempBucketFactory.makeBucket(TEST_SIZE);
+        RandomAccessBucket data = node.clientCore.tempBucketFactory.makeBucket(TEST_SIZE);
         OutputStream os = data.getOutputStream();
+		try {
         byte[] buf = new byte[4096];
         for(long written = 0; written < TEST_SIZE;) {
         	node.fastWeakRandom.nextBytes(buf);
@@ -81,9 +82,11 @@ public class BootstrapPushPullTest {
         	os.write(buf, 0, toWrite);
         	written += toWrite;
         }
+		} finally {
         os.close();
+		}
         System.err.println("Inserting test data.");
-        HighLevelSimpleClient client = node.clientCore.makeClient((short)0);
+        HighLevelSimpleClient client = node.clientCore.makeClient((short)0, false, false);
         InsertBlock block = new InsertBlock(data, new ClientMetadata(), FreenetURI.EMPTY_CHK_URI);
         long startInsertTime = System.currentTimeMillis();
         FreenetURI uri;
@@ -115,7 +118,7 @@ public class BootstrapPushPullTest {
         
         // Fetch the data
         long startFetchTime = System.currentTimeMillis();
-        client = secondNode.clientCore.makeClient((short)0);
+        client = secondNode.clientCore.makeClient((short)0, false, false);
         try {
 			client.fetch(uri);
 		} catch (FetchException e) {
@@ -134,11 +137,11 @@ public class BootstrapPushPullTest {
 	    	try {
 	    		if(node != null)
 	    			node.park();
-	    	} catch (Throwable t1) {};
+	    	} catch (Throwable t1) {}
 	    	try {
 	    		if(secondNode != null)
 	    			secondNode.park();
-	    	} catch (Throwable t1) {};
+	    	} catch (Throwable t1) {}
 
 	    	System.exit(EXIT_THREW_SOMETHING);
 	    }

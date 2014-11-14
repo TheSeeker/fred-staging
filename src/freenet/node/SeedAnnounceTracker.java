@@ -1,5 +1,7 @@
 package freenet.node;
 
+import static java.util.concurrent.TimeUnit.HOURS;
+
 import java.net.InetAddress;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -7,16 +9,17 @@ import java.util.Random;
 
 import freenet.l10n.NodeL10n;
 import freenet.support.HTMLNode;
-import freenet.support.LRUHashtable;
+import freenet.support.LRUMap;
+import freenet.support.io.InetAddressComparator;
 
 /** Tracks announcements by IP address to identify nodes that announce repeatedly. */
 public class SeedAnnounceTracker {
 	
-	private final LRUHashtable<InetAddress, TrackerItem> itemsByIP = 
-		new LRUHashtable<InetAddress, TrackerItem>();
+	private final LRUMap<InetAddress, TrackerItem> itemsByIP = 
+		LRUMap.createSafeMap(InetAddressComparator.COMPARATOR);
 	
 	// This should be plenty for now and limits memory usage to something reasonable.
-	final int MAX_SIZE = 100*1000;
+	private static final int MAX_SIZE = 100*1000;
 
 	/** A single IP address's behaviour */
 	private class TrackerItem {
@@ -60,8 +63,8 @@ public class SeedAnnounceTracker {
 	
 	// Reset every 2 hours.
 	// FIXME implement something smoother.
-	static final long RESET_TIME = 2*60*60*1000;
-	
+	static final long RESET_TIME = HOURS.toMillis(2);
+
 	private long lastReset;
 
 	/** If the IP has had at least 5 noderefs, and is out of date, 80% chance of rejection.
@@ -185,9 +188,8 @@ public class SeedAnnounceTracker {
 			}
 			
 		});
-		TrackerItem[] top = new TrackerItem[Math.min(count, items.length)];
-		System.arraycopy(items, items.length - top.length, top, 0, top.length);
-		return top;
+		int topLength = Math.min(count, items.length);
+		return Arrays.copyOfRange(items, items.length - topLength, items.length);
 	}
 
 	private String l10nStats(String key) {

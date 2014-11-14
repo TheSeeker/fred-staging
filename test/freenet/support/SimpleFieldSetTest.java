@@ -19,11 +19,14 @@ package freenet.support;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.StringReader;
+import java.io.StringWriter;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
 import freenet.node.FSParseException;
+import freenet.support.io.LineReader;
+import freenet.support.io.Readers;
 import junit.framework.TestCase;
 
 /**
@@ -270,7 +273,7 @@ public class SimpleFieldSetTest extends TestCase {
 	 */
 	private boolean checkSimpleFieldSetSize(SimpleFieldSet aSimpleFieldSet, int expectedSize) {
 		int actualSize = 0;
-		Iterator methodKeyIterator = aSimpleFieldSet.keyIterator();
+		Iterator<String> methodKeyIterator = aSimpleFieldSet.keyIterator();
 		while (methodKeyIterator.hasNext()) {
 			methodKeyIterator.next();
 			actualSize++; }
@@ -434,11 +437,11 @@ public class SimpleFieldSetTest extends TestCase {
 	 */
 	private String sfsReadyString(String[][] aStringPairsArray) {
 		
-		String methodStringToReturn = "";
+		StringBuilder methodStringToReturn = new StringBuilder();
 		for(int i = 0; i < aStringPairsArray.length; i++)
-			methodStringToReturn += aStringPairsArray[i][0]+KEY_VALUE_SEPARATOR+aStringPairsArray[i][1]+'\n';
-		methodStringToReturn += SAMPLE_END_MARKER;
-		return methodStringToReturn;
+			methodStringToReturn.append(aStringPairsArray[i][0]).append(KEY_VALUE_SEPARATOR).append(aStringPairsArray[i][1]).append('\n');
+		methodStringToReturn.append(SAMPLE_END_MARKER);
+		return methodStringToReturn.toString();
 	}
 	
 	/**
@@ -449,7 +452,7 @@ public class SimpleFieldSetTest extends TestCase {
 		String[][] methodStringPairs = SAMPLE_STRING_PAIRS;
 		String methodStringToParse = sfsReadyString(methodStringPairs);
 		try {
-			SimpleFieldSet methodSFS = new SimpleFieldSet(methodStringToParse,false,false);
+			SimpleFieldSet methodSFS = new SimpleFieldSet(methodStringToParse,false,false,false);
 			for (int i=0; i < methodStringPairs.length; i++)
 				assertEquals(methodSFS.get(methodStringPairs[i][0]),
 						methodStringPairs[i][1]);
@@ -509,7 +512,7 @@ public class SimpleFieldSetTest extends TestCase {
 		String methodEndMarker = "ANOTHER-ENDING";
 		String methodStringToParse = sfsReadyString(SAMPLE_STRING_PAIRS);
 		try {
-			SimpleFieldSet methodSFS = new SimpleFieldSet(methodStringToParse,false,false);
+			SimpleFieldSet methodSFS = new SimpleFieldSet(methodStringToParse,false,false,false);
 			assertEquals(methodSFS.getEndMarker(),SAMPLE_END_MARKER);
 			methodSFS.setEndMarker(methodEndMarker);
 			assertEquals(methodSFS.getEndMarker(),methodEndMarker);
@@ -535,7 +538,7 @@ public class SimpleFieldSetTest extends TestCase {
 	public void testDirectSubsetNameIterator() {
 		SimpleFieldSet methodSFS = sfsFromSampleStringPairs();
 		String expectedSubset = SAMPLE_STRING_PAIRS[0][0];	//"foo"
-		Iterator methodIter = methodSFS.directSubsetNameIterator();
+		Iterator<String> methodIter = methodSFS.directSubsetNameIterator();
 		while (methodIter.hasNext())
 			assertEquals(methodIter.next(), expectedSubset);
 		methodSFS = new SimpleFieldSet(true);
@@ -687,12 +690,12 @@ public class SimpleFieldSetTest extends TestCase {
 	 * @param aIterator
 	 * @return true if they have the same key set
 	 */
-	private boolean areAllContainedKeys(String[][] aStringPairsArray, String aPrefix, Iterator aIterator) {
+	private boolean areAllContainedKeys(String[][] aStringPairsArray, String aPrefix, Iterator<String> aIterator) {
 		boolean retValue = true;
 		int actualLength = 0;
 		while (aIterator.hasNext()) {
 			actualLength++;
-			retValue &= isAKey(aStringPairsArray,aPrefix,(String)aIterator.next());
+			retValue &= isAKey(aStringPairsArray,aPrefix,aIterator.next());
 		}
 		retValue &= (actualLength==aStringPairsArray.length);
 		return retValue;
@@ -705,7 +708,7 @@ public class SimpleFieldSetTest extends TestCase {
 	 */
 	public void testKeyIterator() {
 		SimpleFieldSet methodSFS = sfsFromSampleStringPairs();
-		Iterator itr = methodSFS.keyIterator();
+		Iterator<String> itr = methodSFS.keyIterator();
 		assertTrue(areAllContainedKeys(SAMPLE_STRING_PAIRS,"",itr));
 	}
 	
@@ -716,7 +719,7 @@ public class SimpleFieldSetTest extends TestCase {
 	public void testKeyIterator_String() {
 		String methodPrefix = "bob";
 		SimpleFieldSet methodSFS = sfsFromSampleStringPairs();
-		Iterator itr = methodSFS.keyIterator(methodPrefix);
+		Iterator<String> itr = methodSFS.keyIterator(methodPrefix);
 		assertTrue(areAllContainedKeys(SAMPLE_STRING_PAIRS,methodPrefix,itr));	
 	}
         
@@ -729,13 +732,13 @@ public class SimpleFieldSetTest extends TestCase {
 	 */
 	public void testToplevelKeyIterator() {
 		SimpleFieldSet methodSFS = sfsFromSampleStringPairs();
-		Iterator itr = methodSFS.toplevelKeyIterator();
+		Iterator<String> itr = methodSFS.toplevelKeyIterator();
 		
-                for(int i=0; i<3; i++) {
-                    assertTrue(itr.hasNext());
-                    assertTrue(isAKey(SAMPLE_STRING_PAIRS, "", (String)itr.next()));
-                }
-                assertFalse(itr.hasNext());
+        for(int i=0; i<3; i++) {
+            assertTrue(itr.hasNext());
+            assertTrue(isAKey(SAMPLE_STRING_PAIRS, "", (String)itr.next()));
+        }
+        assertFalse(itr.hasNext());
 	}
 
 	public void testKeyIterationPastEnd() {
@@ -753,5 +756,48 @@ public class SimpleFieldSetTest extends TestCase {
 		} catch(NoSuchElementException e) {
 			//Expected
 		}
+	}
+	
+	public void testBase64() throws IOException {
+		checkBase64("test", " ", "IA");
+		for(String[] s : SAMPLE_STRING_PAIRS) {
+			String evilValue = "="+s[1];
+			String base64 = Base64.encodeUTF8(evilValue);
+			checkBase64(s[0], evilValue, base64);
+		}
+	}
+	
+	private void checkBase64(String key, String value, String base64Value) throws IOException {
+		SimpleFieldSet sfs = new SimpleFieldSet(true);
+		sfs.putSingle(key, value);
+		assertEquals(sfs.toOrderedString(), key+"="+value+"\nEnd\n");
+		StringWriter sw = new StringWriter();
+		sfs.writeTo(sw, "", false, true);
+		String written = sw.toString();
+		assertEquals(written, key+"=="+base64Value+"\nEnd\n");
+		LineReader r = Readers.fromBufferedReader(new BufferedReader(new StringReader(written)));
+		SimpleFieldSet sfsCheck = new SimpleFieldSet(r, 1024, 1024, true, false, true, true);
+		assertEquals(sfsCheck.get(key), value);
+	}
+	
+	public void testEmptyValue() throws IOException {
+		String written = "foo.blah=\nEnd\n";
+		LineReader r = Readers.fromBufferedReader(new BufferedReader(new StringReader(written)));
+		SimpleFieldSet sfsCheck = new SimpleFieldSet(r, 1024, 1024, true, false, true, false);
+		assertTrue(sfsCheck.get("foo.blah").equals(""));
+		r = Readers.fromBufferedReader(new BufferedReader(new StringReader(written)));
+		sfsCheck = new SimpleFieldSet(r, 1024, 1024, true, false, true, true);
+		assertTrue(sfsCheck.get("foo.blah").equals(""));
+	}
+	
+	public void testSplit() {
+	    assertTrue(Arrays.equals(SimpleFieldSet.split("blah"), new String[] { "blah" }));
+	    assertTrue(Arrays.equals(SimpleFieldSet.split("blah; blah"), new String[] { "blah", " blah" }));
+	    assertTrue(Arrays.equals(SimpleFieldSet.split("blah;1;2"), new String[] { "blah", "1", "2" }));
+	    assertTrue(Arrays.equals(SimpleFieldSet.split("blah;1;2;"), new String[] { "blah", "1", "2", "" }));
+	    assertTrue(Arrays.equals(SimpleFieldSet.split("blah;1;2;;"), new String[] { "blah", "1", "2", "", "" }));
+        assertTrue(Arrays.equals(SimpleFieldSet.split(";blah;1;2;;"), new String[] { "", "blah", "1", "2", "", "" }));
+        assertTrue(Arrays.equals(SimpleFieldSet.split(";;blah;1;2;;"), new String[] { "", "", "blah", "1", "2", "", "" }));
+        assertTrue(Arrays.equals(SimpleFieldSet.split(";;;"), new String[] { "", "", "" }));
 	}
 }

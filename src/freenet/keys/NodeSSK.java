@@ -10,12 +10,10 @@ import java.io.IOException;
 import java.security.MessageDigest;
 import java.util.Arrays;
 
-import com.db4o.ObjectContainer;
-
 import freenet.crypt.DSAPublicKey;
 import freenet.crypt.SHA256;
-import freenet.node.GetPubkey;
 import freenet.store.BlockMetadata;
+import freenet.store.GetPubkey;
 import freenet.support.Fields;
 import freenet.support.HexUtil;
 import freenet.support.Logger;
@@ -94,10 +92,8 @@ public class NodeSSK extends Key {
     	super(key);
     	this.cryptoAlgorithm = key.cryptoAlgorithm;
     	this.pubKey = key.pubKey;
-    	this.pubKeyHash = new byte[key.pubKeyHash.length];
-    	System.arraycopy(key.pubKeyHash, 0, pubKeyHash, 0, key.pubKeyHash.length);
-    	this.encryptedHashedDocname = new byte[key.encryptedHashedDocname.length];
-    	System.arraycopy(key.encryptedHashedDocname, 0, encryptedHashedDocname, 0, key.encryptedHashedDocname.length);
+    	this.pubKeyHash = key.pubKeyHash.clone();
+    	this.encryptedHashedDocname = key.encryptedHashedDocname.clone();
     	this.hashCode = key.hashCode;
     }
     
@@ -224,10 +220,8 @@ public class NodeSSK extends Key {
 		byte cryptoAlgorithm = buf[1];
 		if(cryptoAlgorithm != Key.ALGO_AES_PCFB_256_SHA256)
 			throw new SSKVerifyException("Unknown crypto algorithm "+buf[1]);
-		byte[] encryptedHashedDocname = new byte[E_H_DOCNAME_SIZE];
-		System.arraycopy(buf, 2, encryptedHashedDocname, 0, E_H_DOCNAME_SIZE);
-		byte[] pubkeyHash = new byte[PUBKEY_HASH_SIZE];
-		System.arraycopy(buf, 2 + E_H_DOCNAME_SIZE, pubkeyHash, 0, PUBKEY_HASH_SIZE);
+		byte[] encryptedHashedDocname = Arrays.copyOfRange(buf, 2, 2+E_H_DOCNAME_SIZE);
+		byte[] pubkeyHash = Arrays.copyOfRange(buf, 2+E_H_DOCNAME_SIZE, 2+E_H_DOCNAME_SIZE+PUBKEY_HASH_SIZE);
 		return new NodeSSK(pubkeyHash, encryptedHashedDocname, null, cryptoAlgorithm);
 	}
 
@@ -241,10 +235,8 @@ public class NodeSSK extends Key {
 		if(keyBuf.length != FULL_KEY_LENGTH) {
 			Logger.error(NodeSSK.class, "routingKeyFromFullKey() on buffer length "+keyBuf.length);
 		}
-		byte[] encryptedHashedDocname = new byte[E_H_DOCNAME_SIZE];
-		byte[] pubKeyHash = new byte[PUBKEY_HASH_SIZE];
-		System.arraycopy(keyBuf, 2, encryptedHashedDocname, 0, E_H_DOCNAME_SIZE);
-		System.arraycopy(keyBuf, 2+E_H_DOCNAME_SIZE, pubKeyHash, 0, PUBKEY_HASH_SIZE);
+		byte[] encryptedHashedDocname = Arrays.copyOfRange(keyBuf, 2, 2+E_H_DOCNAME_SIZE);
+		byte[] pubKeyHash = Arrays.copyOfRange(keyBuf, 2+E_H_DOCNAME_SIZE, 2+E_H_DOCNAME_SIZE+PUBKEY_HASH_SIZE);
 		return makeRoutingKey(pubKeyHash, encryptedHashedDocname);
 	}
 
@@ -257,11 +249,6 @@ public class NodeSSK extends Key {
 		return Fields.compareBytes(pubKeyHash, key.pubKeyHash);
 	}
 	
-	@Override
-	public void removeFrom(ObjectContainer container) {
-		super.removeFrom(container);
-	}
-
 }
 
 final class ArchiveNodeSSK extends NodeSSK {

@@ -1,5 +1,7 @@
 package freenet.node;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
+
 import java.lang.ref.WeakReference;
 import java.util.HashSet;
 
@@ -30,9 +32,10 @@ public abstract class UIDTag {
 	final boolean wasLocal;
 	private final WeakReference<PeerNode> sourceRef;
 	final boolean realTimeFlag;
-	private final Node node;
+	protected final RequestTracker tracker;
 	protected boolean accepted;
 	protected boolean sourceRestarted;
+	private boolean slowDown;
 	
 	/** Nodes we have routed to at some point */
 	private HashSet<PeerNode> routedTo = null;
@@ -59,7 +62,7 @@ public abstract class UIDTag {
 		this.sourceRef = source == null ? null : source.myRef;
 		wasLocal = source == null;
 		this.realTimeFlag = realTimeFlag;
-		this.node = node;
+		this.tracker = node.tracker;
 		this.uid = uid;
 		if(logMINOR)
 			Logger.minor(this, "Created "+this);
@@ -173,8 +176,8 @@ public abstract class UIDTag {
 		innerUnlock(noRecordUnlock);
 	}
 	
-	protected final void innerUnlock(boolean noRecordUnlock) {
-		node.unlockUID(this, false, noRecordUnlock);
+	protected void innerUnlock(boolean noRecordUnlock) {
+		tracker.unlockUID(this, false, noRecordUnlock);
 	}
 
 	public void postUnlock() {
@@ -379,10 +382,10 @@ public abstract class UIDTag {
 	}
 
 	private long loggedStillPresent;
-	private int LOGGED_STILL_PRESENT_INTERVAL = 60*1000;
-	
+	private static final long LOGGED_STILL_PRESENT_INTERVAL = SECONDS.toMillis(60);
+
 	public void maybeLogStillPresent(long now, Long uid) {
-		if(now - createdTime > Node.TIMEOUT) {
+		if(now - createdTime > RequestTracker.TIMEOUT) {
 			synchronized(this) {
 				if(now - loggedStillPresent < LOGGED_STILL_PRESENT_INTERVAL) return;
 				loggedStillPresent = now;
@@ -461,4 +464,13 @@ public abstract class UIDTag {
 		return waitingForSlot;
 	}
 
+	/** Set a flag indicating the originator should slow down. Only used at the shouldRejectRequest stage. */
+	synchronized void slowDown() {
+		slowDown = true;
+	}
+
+	/** Query the slow-down flag. Should be checked after shouldRejectRequest. */
+	synchronized boolean shouldSlowDown() {
+		return slowDown;
+	}
 }

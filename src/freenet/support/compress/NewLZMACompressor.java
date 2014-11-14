@@ -3,8 +3,6 @@
 * http://www.gnu.org/ for further details of the GPL. */
 package freenet.support.compress;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
@@ -23,7 +21,6 @@ import freenet.support.io.Closer;
 import freenet.support.io.CountedInputStream;
 import freenet.support.io.CountedOutputStream;
 
-// WARNING: THIS CLASS IS STORED IN DB4O -- THINK TWICE BEFORE ADD/REMOVE/RENAME FIELDS
 public class NewLZMACompressor implements Compressor {
 	
     // Dictionary size 1MB, this is equivalent to lzma -4, it uses 16MB to compress and 2MB to decompress.
@@ -53,8 +50,9 @@ public class NewLZMACompressor implements Compressor {
 			if(logMINOR)
 				Logger.minor(this, "Compressing "+data+" size "+data.size()+" to new bucket "+output);
 			compress(is, os, maxReadLength, maxWriteLength);
-			is.close();
-			os.close();
+			// It is essential that the close()'s throw if there is any problem.
+			is.close(); is = null;
+			os.close(); os = null;
 		} finally {
 			Closer.close(is);
 			Closer.close(os);
@@ -66,8 +64,8 @@ public class NewLZMACompressor implements Compressor {
 	public long compress(InputStream is, OutputStream os, long maxReadLength, long maxWriteLength) throws IOException, CompressionOutputSizeException {
 		CountedInputStream cis = null;
 		CountedOutputStream cos = null;
-		cis = new CountedInputStream(new BufferedInputStream(is, 32768));
-		cos = new CountedOutputStream(new BufferedOutputStream(os, 32768));
+		cis = new CountedInputStream(is);
+		cos = new CountedOutputStream(os);
 		Encoder encoder = new Encoder();
         encoder.SetEndMarkerMode( true );
         int dictionarySize = 1;
@@ -97,13 +95,21 @@ public class NewLZMACompressor implements Compressor {
 			output = bf.makeBucket(maxLength);
 		if(logMINOR)
 			Logger.minor(this, "Decompressing "+data+" size "+data.size()+" to new bucket "+output);
-		CountedInputStream is = new CountedInputStream(new BufferedInputStream(data.getInputStream(), 32768));
-		BufferedOutputStream os = new BufferedOutputStream(output.getOutputStream(), 32768);
-		decompress(is, os, maxLength, maxCheckSizeLength);
-		os.close();
-		if(logMINOR)
-			Logger.minor(this, "Output: "+output+" size "+output.size()+" read "+is.count());
-		is.close();
+		CountedInputStream is = null;
+		OutputStream os = null;
+		try {
+			is = new CountedInputStream(data.getInputStream());
+			os = output.getOutputStream();
+			decompress(is, os, maxLength, maxCheckSizeLength);
+			if(logMINOR)
+				Logger.minor(this, "Output: "+output+" size "+output.size()+" read "+is.count());
+			// It is essential that the close()'s throw if there is any problem.
+			is.close(); is = null;
+			os.close(); os = null;
+		} finally {
+			Closer.close(os);
+			Closer.close(is);
+		}
 		return output;
 	}
 

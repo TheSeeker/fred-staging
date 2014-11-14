@@ -12,7 +12,7 @@ import freenet.support.Logger.LogLevel;
  * Simple running average: linear mean of the last N reports.
  * @author amphibian
  */
-public class SimpleRunningAverage implements RunningAverage {
+public final class SimpleRunningAverage implements RunningAverage, Cloneable {
 	private static final long serialVersionUID = -1;
     final double[] refs;
     int nextSlotPtr=0;
@@ -23,7 +23,8 @@ public class SimpleRunningAverage implements RunningAverage {
     private boolean logDEBUG = Logger.shouldLog(LogLevel.DEBUG, this);
 
     @Override
-	public final Object clone() {
+	public final SimpleRunningAverage clone() {
+    	// Deep copy needed. Implement Cloneable to shut up findbugs.
         return new SimpleRunningAverage(this);
     }
     

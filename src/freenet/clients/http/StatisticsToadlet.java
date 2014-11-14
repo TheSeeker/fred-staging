@@ -1,5 +1,10 @@
 package freenet.clients.http;
 
+import static java.util.concurrent.TimeUnit.DAYS;
+import static java.util.concurrent.TimeUnit.HOURS;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
+
 import java.io.IOException;
 import java.net.URI;
 import java.text.DecimalFormat;
@@ -14,6 +19,7 @@ import java.util.Map;
 import freenet.client.async.ClientRequester;
 import freenet.client.HighLevelSimpleClient;
 import freenet.config.SubConfig;
+import freenet.crypt.ciphers.Rijndael;
 import freenet.io.comm.IncomingPacketFilterImpl;
 import freenet.io.xfer.BlockReceiver;
 import freenet.io.xfer.BlockTransmitter;
@@ -29,6 +35,7 @@ import freenet.node.PeerManager;
 import freenet.node.PeerNodeStatus;
 import freenet.node.RequestClient;
 import freenet.node.RequestStarterGroup;
+import freenet.node.RequestTracker;
 import freenet.node.Version;
 import freenet.node.stats.DataStoreInstanceType;
 import freenet.node.stats.DataStoreStats;
@@ -85,10 +92,10 @@ public class StatisticsToadlet extends Toadlet {
 	 */
 	private int getPeerStatusCount(PeerNodeStatus[] peerNodeStatuses, int status) {
 		int count = 0;
-		for (int peerIndex = 0, peerCount = peerNodeStatuses.length; peerIndex < peerCount; peerIndex++) {
-			if(!peerNodeStatuses[peerIndex].recordStatus())
+		for (PeerNodeStatus peerNodeStatus: peerNodeStatuses) {
+			if(!peerNodeStatus.recordStatus())
 				continue;
-			if (peerNodeStatuses[peerIndex].getStatusValue() == status) {
+			if (peerNodeStatus.getStatusValue() == status) {
 				count++;
 			}
 		}
@@ -97,26 +104,24 @@ public class StatisticsToadlet extends Toadlet {
 	
 	private int getCountSeedServers(PeerNodeStatus[] peerNodeStatuses) {
 		int count = 0;
-		for(int peerIndex = 0; peerIndex < peerNodeStatuses.length; peerIndex++) {
-			if(peerNodeStatuses[peerIndex].isSeedServer()) count++;
+		for (PeerNodeStatus peerNodeStatus: peerNodeStatuses) {
+			if(peerNodeStatus.isSeedServer()) count++;
 		}
 		return count;
 	}
 
 	private int getCountSeedClients(PeerNodeStatus[] peerNodeStatuses) {
 		int count = 0;
-		for(int peerIndex = 0; peerIndex < peerNodeStatuses.length; peerIndex++) {
-			if(peerNodeStatuses[peerIndex].isSeedClient()) count++;
+		for (PeerNodeStatus peerNodeStatus: peerNodeStatuses) {
+			if(peerNodeStatus.isSeedClient()) count++;
 		}
 		return count;
 	}
 
 	public void handleMethodGET(URI uri, HTTPRequest request, ToadletContext ctx) throws ToadletContextClosedException, IOException, RedirectException {
-
-		if(!ctx.isAllowedFullAccess()) {
-			super.sendErrorPage(ctx, 403, NodeL10n.getBase().getString("Toadlet.unauthorizedTitle"), NodeL10n.getBase().getString("Toadlet.unauthorized"));
-			return;
-		}
+        if(!ctx.checkFullAccess(this))
+            return;
+        
 		final SubConfig nodeConfig = node.config.get("node");
 		
 		final String requestPath = request.getPath().substring(path().length());
@@ -128,7 +133,7 @@ public class StatisticsToadlet extends Toadlet {
 			}
 		}
 
-		node.clientCore.bandwidthStatsPutter.updateData();
+		node.clientCore.bandwidthStatsPutter.updateData(node);
 
 		HTMLNode pageNode;
 		
@@ -166,8 +171,8 @@ public class StatisticsToadlet extends Toadlet {
 		int numberOfDisconnecting = PeerNodeStatus.getPeerStatusCount(peerNodeStatuses, PeerManager.PEER_NODE_STATUS_DISCONNECTING);
 		int numberOfNoLoadStats = PeerNodeStatus.getPeerStatusCount(peerNodeStatuses, PeerManager.PEER_NODE_STATUS_NO_LOAD_STATS);
 
-		final int mode = ctx.getPageMaker().parseMode(request, container);
 		PageNode page = ctx.getPageMaker().getPageNode(l10n("fullTitle"), ctx);
+		boolean advancedMode = ctx.isAdvancedModeEnabled();
 		pageNode = page.outer;
 		HTMLNode contentNode = page.content;
 
@@ -177,7 +182,7 @@ public class StatisticsToadlet extends Toadlet {
 		final long nodeUptimeSeconds = (now - node.startupTime) / 1000;
 
 		if(ctx.isAllowedFullAccess())
-			contentNode.addChild(core.alerts.createSummary());
+			contentNode.addChild(ctx.getAlertManager().createSummary());
 
 		double swaps = node.getSwaps();
 		double noSwaps = node.getNoSwaps();
@@ -195,7 +200,7 @@ public class StatisticsToadlet extends Toadlet {
 		// jvm stats box
 		HTMLNode jvmStatsInfobox = nextTableCell.addChild("div", "class", "infobox");
 		
-		drawJVMStatsBox(jvmStatsInfobox);
+		drawJVMStatsBox(jvmStatsInfobox, advancedMode);
 		
 		// Statistic gathering box
 		HTMLNode statGatheringContent = ctx.getPageMaker().getInfobox("#", l10n("statisticGatheringTitle"), nextTableCell, "statistics-generating", true);
@@ -209,8 +214,9 @@ public class StatisticsToadlet extends Toadlet {
 		if(nodeConfig.config.get("logger").getBoolean("enabled"))
 			logsList.addChild("li").addChild("a", new String[]{ "href", "target"}, new String[]{ "/?latestlog", "_blank"}, l10n("getLogs"));
 		logsList.addChild("li").addChild("a", "href", TranslationToadlet.TOADLET_URL+"?getOverrideTranlationFile").addChild("#", NodeL10n.getBase().getString("TranslationToadlet.downloadTranslationsFile"));
+		logsList.addChild("li").addChild("a", "href", DiagnosticToadlet.TOADLET_URL).addChild("#", NodeL10n.getBase().getString("FProxyToadlet.diagnostic"));
 		
-		if(mode >= PageMaker.MODE_ADVANCED) {
+		if(advancedMode) {
 			// store size box
 			//HTMLNode storeSizeInfobox = nextTableCell.addChild("div", "class", "infobox");
              HTMLNode storeSizeInfobox = contentNode.addChild("div","class", "infobox");
@@ -254,16 +260,16 @@ public class StatisticsToadlet extends Toadlet {
 			}
 		}
 
-		if(mode >= PageMaker.MODE_ADVANCED || numberOfConnected + numberOfRoutingBackedOff > 0) {			
+		if(advancedMode || numberOfConnected + numberOfRoutingBackedOff > 0) {
 
 			// Activity box
 			nextTableCell = overviewTableRow.addChild("td", "class", "last");
 			HTMLNode activityInfobox = nextTableCell.addChild("div", "class", "infobox");
 			
-			drawActivityBox(activityInfobox, mode >= PageMaker.MODE_ADVANCED);
+			drawActivityBox(activityInfobox, advancedMode);
 
 			/* node status overview box */
-			if(mode >= PageMaker.MODE_ADVANCED) {
+			if(advancedMode) {
 				HTMLNode overviewInfobox = nextTableCell.addChild("div", "class", "infobox");
 				drawOverviewBox(overviewInfobox, nodeUptimeSeconds, node.clientCore.bandwidthStatsPutter.getLatestUptimeData().totalUptime, now, swaps, noSwaps);
 			}
@@ -271,7 +277,7 @@ public class StatisticsToadlet extends Toadlet {
 			// Peer statistics box
 			HTMLNode peerStatsInfobox = nextTableCell.addChild("div", "class", "infobox");
 			
-			drawPeerStatsBox(peerStatsInfobox, mode >= PageMaker.MODE_ADVANCED, numberOfConnected, numberOfRoutingBackedOff, 
+			drawPeerStatsBox(peerStatsInfobox, advancedMode, numberOfConnected, numberOfRoutingBackedOff,
 					numberOfTooNew, numberOfTooOld, numberOfDisconnected, numberOfNeverConnected, numberOfDisabled, 
 					numberOfBursting, numberOfListening, numberOfListenOnly, numberOfSeedServers, numberOfSeedClients,
 					numberOfRoutingDisabled, numberOfClockProblem, numberOfConnError, numberOfDisconnecting, numberOfNoLoadStats, node);
@@ -279,10 +285,10 @@ public class StatisticsToadlet extends Toadlet {
 			// Bandwidth box
 			HTMLNode bandwidthInfobox = nextTableCell.addChild("div", "class", "infobox");
 			
-			drawBandwidthBox(bandwidthInfobox, nodeUptimeSeconds, mode >= PageMaker.MODE_ADVANCED);
+			drawBandwidthBox(bandwidthInfobox, nodeUptimeSeconds, advancedMode);
 		}
 
-		if(mode >= PageMaker.MODE_ADVANCED) {
+		if(advancedMode) {
 
 			// Peer routing backoff reason box
 			HTMLNode backoffReasonInfobox = nextTableCell.addChild("div", "class", "infobox");
@@ -298,10 +304,10 @@ public class StatisticsToadlet extends Toadlet {
 				curBackoffReasonContent.addChild("#", l10n("notBackedOff"));
 			} else {
 				HTMLNode reasonList = curBackoffReasonContent.addChild("ul");
-				for(int i=0;i<routingBackoffReasons.length;i++) {
-					int reasonCount = peers.getPeerNodeRoutingBackoffReasonSize(routingBackoffReasons[i], false);
+				for(String routingBackoffReason: routingBackoffReasons) {
+					int reasonCount = peers.getPeerNodeRoutingBackoffReasonSize(routingBackoffReason, false);
 					if(reasonCount > 0) {
-						reasonList.addChild("li", routingBackoffReasons[i] + '\u00a0' + reasonCount);
+						reasonList.addChild("li", routingBackoffReason + '\u00a0' + reasonCount);
 					}
 				}
 			}
@@ -315,10 +321,10 @@ public class StatisticsToadlet extends Toadlet {
 				curBackoffReasonContent.addChild("#", l10n("notBackedOff"));
 			} else {
 				HTMLNode reasonList = curBackoffReasonContent.addChild("ul");
-				for(int i=0;i<routingBackoffReasons.length;i++) {
-					int reasonCount = peers.getPeerNodeRoutingBackoffReasonSize(routingBackoffReasons[i], true);
+				for(String routingBackoffReason: routingBackoffReasons) {
+					int reasonCount = peers.getPeerNodeRoutingBackoffReasonSize(routingBackoffReason, true);
 					if(reasonCount > 0) {
-						reasonList.addChild("li", routingBackoffReasons[i] + '\u00a0' + reasonCount);
+						reasonList.addChild("li", routingBackoffReason + '\u00a0' + reasonCount);
 					}
 				}
 			}
@@ -445,11 +451,6 @@ public class StatisticsToadlet extends Toadlet {
 			drawRejectReasonsBox(nextTableCell, false);
 			drawRejectReasonsBox(nextTableCell, true);
 			
-			// database thread jobs box
-			
-			HTMLNode databaseJobsInfobox = nextTableCell.addChild("div", "class", "infobox");
-			drawDatabaseJobsBox(databaseJobsInfobox);
-
 			OpennetManager om = node.getOpennet();
 			if(om != null) {
 				// opennet stats box
@@ -486,7 +487,7 @@ public class StatisticsToadlet extends Toadlet {
 				HTMLNode nodeSpecialisationInfobox = nextTableCell.addChild("div", "class", "infobox");
 				nodeSpecialisationInfobox.addChild("div", "class", "infobox-header", "Incoming\u00a0Request\u00a0Distribution");
 				HTMLNode nodeSpecialisationTable = nodeSpecialisationInfobox.addChild("div", "class", "infobox-content").addChild("table");
-				addSpecialisation(nodeSpecialisationTable, myLocation, incomingRequestsCount, incomingRequestLocation);
+				addSpecialisation(nodeSpecialisationTable, myLocation, incomingRequestLocation);
 			}
 			
 			nextTableCell = overviewTableRow.addChild("td");
@@ -501,7 +502,7 @@ public class StatisticsToadlet extends Toadlet {
 				HTMLNode nodeSpecialisationInfobox = nextTableCell.addChild("div", "class", "infobox");
 				nodeSpecialisationInfobox.addChild("div", "class", "infobox-header", "Outgoing\u00a0Request\u00a0Distribution");
 				HTMLNode nodeSpecialisationTable = nodeSpecialisationInfobox.addChild("div", "class", "infobox-content").addChild("table");
-				addCombinedSpecialisation(nodeSpecialisationTable, myLocation, outgoingLocalRequestsCount, outgoingLocalRequestLocation, outgoingRequestsCount, outgoingRequestLocation);
+				addCombinedSpecialisation(nodeSpecialisationTable, myLocation, outgoingLocalRequestLocation, outgoingRequestLocation);
 			}
 
 			overviewTableRow = overviewTable.addChild("tr");
@@ -509,13 +510,17 @@ public class StatisticsToadlet extends Toadlet {
 
 			// success rate per location
 			int[] locationSuccessRatesArray = stats.chkSuccessRatesByLocation.getPercentageArray(1000);
-
-			{
-				HTMLNode nodeSpecialisationInfobox = nextTableCell.addChild("div", "class", "infobox");
-				nodeSpecialisationInfobox.addChild("div", "class", "infobox-header", "Local\u00a0CHK\u00a0Success\u00a0Rates\u00a0By\u00a0Location");
-				HTMLNode nodeSpecialisationTable = nodeSpecialisationInfobox.addChild("div", "class", "infobox-content").addChild("table");
-				addSpecialisation(nodeSpecialisationTable, myLocation, 1000, locationSuccessRatesArray);
-			}
+			HTMLNode nodeSpecialisationInfobox = nextTableCell.addChild("div", "class", "infobox");
+			nodeSpecialisationInfobox.addChild("div", "class", "infobox-header", "Local\u00a0CHK\u00a0Success\u00a0Rates\u00a0By\u00a0Location");
+			HTMLNode nodeSpecialisationTable = nodeSpecialisationInfobox.addChild("div", "class", "infobox-content").addChild("table");
+			addSpecialisation(nodeSpecialisationTable, myLocation, locationSuccessRatesArray);
+			nextTableCell = overviewTableRow.addChild("td");
+			
+			// FOAF link-length distribution box
+			HTMLNode foafLinkInfobox = nextTableCell.addChild("div", "class", "infobox");
+			foafLinkInfobox.addChild("div", "class", "infobox-header", "FOAF\u00a0Link-Length\u00a0Distribution");
+			HTMLNode foafLinkTable = foafLinkInfobox.addChild("div", "class", "infobox-content").addChild("table");
+			addFOAFLinkLengthHistogram(foafLinkTable, peerNodeStatuses);
 		}
 		
 		}
@@ -577,17 +582,13 @@ public class StatisticsToadlet extends Toadlet {
 		HTMLNode versionInfoboxList = versionInfoboxContent.addChild("ul");
 		versionInfoboxList.addChild("li", NodeL10n.getBase().getString("WelcomeToadlet.version", new String[] { "fullVersion", "build", "rev" },
 				new String[] { Version.publicVersion(), Integer.toString(Version.buildNumber()), Version.cvsRevision() }));
-		if(NodeStarter.extBuildNumber < NodeStarter.RECOMMENDED_EXT_BUILD_NUMBER)
-			versionInfoboxList.addChild("li", NodeL10n.getBase().getString("WelcomeToadlet.extVersionWithRecommended", 
-					new String[] { "build", "recbuild", "rev" }, 
-					new String[] { Integer.toString(NodeStarter.extBuildNumber), Integer.toString(NodeStarter.RECOMMENDED_EXT_BUILD_NUMBER), NodeStarter.extRevisionNumber }));
-		else
-			versionInfoboxList.addChild("li", NodeL10n.getBase().getString("WelcomeToadlet.extVersion", new String[] { "build", "rev" },
-					new String[] { Integer.toString(NodeStarter.extBuildNumber), NodeStarter.extRevisionNumber }));
-		
+		versionInfoboxList.addChild("li", NodeL10n.getBase().getString("WelcomeToadlet.extVersion", new String[] { "build", "rev" },
+				new String[] { Integer.toString(NodeStarter.extBuildNumber), NodeStarter.extRevisionNumber }));
+
+		node.getNodeUpdater().addChangelogLinks(Version.buildNumber(), versionInfobox);
 	}
 
-	private void drawJVMStatsBox(HTMLNode jvmStatsInfobox) {
+	private void drawJVMStatsBox(HTMLNode jvmStatsInfobox, boolean advancedModeEnabled) {
 		
 		jvmStatsInfobox.addChild("div", "class", "infobox-header", l10n("jvmInfoTitle"));
 		HTMLNode jvmStatsInfoboxContent = jvmStatsInfobox.addChild("div", "class", "infobox-content");
@@ -618,7 +619,12 @@ public class StatisticsToadlet extends Toadlet {
 		jvmStatsList.addChild("li", l10n("osName", "name", System.getProperty("os.name")));
 		jvmStatsList.addChild("li", l10n("osVersion", "version", System.getProperty("os.version")));
 		jvmStatsList.addChild("li", l10n("osArch", "arch", System.getProperty("os.arch")));
-		
+		if(advancedModeEnabled) {
+			if(Rijndael.AesCtrProvider == null)
+				jvmStatsList.addChild("li", l10n("cryptoUsingBuiltin"));
+			else
+				jvmStatsList.addChild("li", l10n("cryptoUsingJCA", "provider", Rijndael.getProviderName()));
+		}
 	}
 	
 	private void drawThreadPriorityStatsBox(HTMLNode node) {
@@ -641,49 +647,6 @@ public class StatisticsToadlet extends Toadlet {
 			row.addChild("td", String.valueOf(activeThreadsByPriority[i]));
 			row.addChild("td", String.valueOf(waitingThreadsByPriority[i]));
 		}
-	}
-
-	private void drawDatabaseJobsBox(HTMLNode node) {
-		// Job count by priority
-		node.addChild("div", "class", "infobox-header", l10n("databaseJobsByPriority"));
-		HTMLNode threadsInfoboxContent = node.addChild("div", "class", "infobox-content");
-		int[] jobsByPriority = core.clientDatabaseExecutor.getQueuedJobsCountByPriority();
-		
-		HTMLNode threadsByPriorityTable = threadsInfoboxContent.addChild("table", "border", "0");
-		HTMLNode row = threadsByPriorityTable.addChild("tr");
-
-		row.addChild("th", l10n("priority"));
-		row.addChild("th", l10n("waiting"));
-		
-		for(int i=0; i<jobsByPriority.length; i++) {
-			row = threadsByPriorityTable.addChild("tr");
-			row.addChild("td", String.valueOf(i));
-			row.addChild("td", String.valueOf(jobsByPriority[i]));
-		}
-
-		// Per job-type execution count and avg execution time
-		
-		HTMLNode executionTimeStatisticsTable = threadsInfoboxContent.addChild("table", "border", "0");
-		row = executionTimeStatisticsTable .addChild("tr");
-		row.addChild("th", l10n("jobType"));
-		row.addChild("th", l10n("count"));
-		row.addChild("th", l10n("avgTime"));
-		row.addChild("th", l10n("totalTime"));
-		
-		
-		for(NodeStats.TimedStats entry : stats.getDatabaseJobExecutionStatistics()) {
-			row = executionTimeStatisticsTable.addChild("tr");
-			row.addChild("td", entry.keyStr);
-			row.addChild("td", Long.toString(entry.count));
-			row.addChild("td", TimeUtil.formatTime(entry.avgTime, 2, true));
-			row.addChild("td", TimeUtil.formatTime(entry.totalTime, 2, true));
-		}
-		
-		HTMLNode jobQueueStatistics = threadsInfoboxContent.addChild("table", "border", "0");
-		row = jobQueueStatistics .addChild("tr");
-		row.addChild("th", l10n("queuedCount"));
-		row.addChild("th", l10n("jobType"));
-		stats.getDatabaseJobQueueStatistics().toTableRows(jobQueueStatistics);
 	}
 
 	private void drawOpennetStatsBox(HTMLNode box, OpennetManager om) {
@@ -725,8 +688,7 @@ public class StatisticsToadlet extends Toadlet {
 				continue;
 			row = table.addChild("tr");
 			RequestClient client = request.getClient();
-			// client can be null if the request is stored in DB4O and then deactivated
-			row.addChild("td", client==null ? "null" : client.toString());
+			row.addChild("td", client.toString());
 			try {
 				String s = request.toString();
 				if(s.indexOf(':') > s.indexOf('@')) {
@@ -886,8 +848,7 @@ public class StatisticsToadlet extends Toadlet {
 				return secondCount.messageCount - firstCount.messageCount;  // sort in descending order
 			}
 		});
-		for (int countsArrayIndex = 0, countsArrayCount = unclaimedFIFOMessageCountsArray.length; countsArrayIndex < countsArrayCount; countsArrayIndex++) {
-			STMessageCount messageCountItem = unclaimedFIFOMessageCountsArray[countsArrayIndex];
+		for (STMessageCount messageCountItem: unclaimedFIFOMessageCountsArray) {
 			int thisMessageCount = messageCountItem.messageCount;
 			double thisMessagePercentOfTotal = ((double) thisMessageCount) / ((double) totalCount);
 			unclaimedFIFOMessageCountsList.addChild("li", "" + messageCountItem.messageName + ":\u00a0" + thisMessageCount + "\u00a0(" + fix3p1pct.format(thisMessagePercentOfTotal) + ')');
@@ -906,7 +867,7 @@ public class StatisticsToadlet extends Toadlet {
 		int swapsRejectedRecognizedID = node.getSwapsRejectedRecognizedID();
 		double locChangeSession = node.getLocationChangeSession();
 		int averageSwapTime = node.getAverageOutgoingSwapTime();
-		int sendSwapInterval = node.getSendSwapInterval();
+		long sendSwapInterval = node.getSendSwapInterval();
 
 		HTMLNode locationSwapInfoboxContent = locationSwapInfobox.addChild("div", "class", "infobox-content");
 		HTMLNode locationSwapList = locationSwapInfoboxContent.addChild("ul");
@@ -1096,6 +1057,7 @@ public class StatisticsToadlet extends Toadlet {
 				activityList.addChild("li", "ARK\u00a0Fetch\u00a0Requests:\u00a0" + numARKFetchers);
 			activityList.addChild("li", "BackgroundFetcherByUSKSize:\u00a0" + node.clientCore.uskManager.getBackgroundFetcherByUSKSize());
 			activityList.addChild("li", "temporaryBackgroundFetchersLRUSize:\u00a0" + node.clientCore.uskManager.getTemporaryBackgroundFetchersLRU());
+			activityList.addChild("li", "outputBandwidthLiabilityUsage:\u00a0" + this.fix3p1pct.format(node.nodeStats.getBandwidthLiabilityUsage()));
 		}
 		
 	}
@@ -1190,18 +1152,19 @@ public class StatisticsToadlet extends Toadlet {
 	}
 
 	static HTMLNode drawActivity(HTMLNode activityInfoboxContent, Node node) {
-		int numLocalCHKInserts = node.getNumLocalCHKInserts();
-		int numRemoteCHKInserts = node.getNumRemoteCHKInserts();
-		int numLocalSSKInserts = node.getNumLocalSSKInserts();
-		int numRemoteSSKInserts = node.getNumRemoteSSKInserts();
-		int numLocalCHKRequests = node.getNumLocalCHKRequests();
-		int numRemoteCHKRequests = node.getNumRemoteCHKRequests();
-		int numLocalSSKRequests = node.getNumLocalSSKRequests();
-		int numRemoteSSKRequests = node.getNumRemoteSSKRequests();
-		int numTransferringRequests = node.getNumTransferringRequestSenders();
-		int numTransferringRequestHandlers = node.getNumTransferringRequestHandlers();
-		int numCHKOfferReplys = node.getNumCHKOfferReplies();
-		int numSSKOfferReplys = node.getNumSSKOfferReplies();
+		RequestTracker tracker = node.tracker;
+		int numLocalCHKInserts = tracker.getNumLocalCHKInserts();
+		int numRemoteCHKInserts = tracker.getNumRemoteCHKInserts();
+		int numLocalSSKInserts = tracker.getNumLocalSSKInserts();
+		int numRemoteSSKInserts = tracker.getNumRemoteSSKInserts();
+		int numLocalCHKRequests = tracker.getNumLocalCHKRequests();
+		int numRemoteCHKRequests = tracker.getNumRemoteCHKRequests();
+		int numLocalSSKRequests = tracker.getNumLocalSSKRequests();
+		int numRemoteSSKRequests = tracker.getNumRemoteSSKRequests();
+		int numTransferringRequests = tracker.getNumTransferringRequestSenders();
+		int numTransferringRequestHandlers = tracker.getNumTransferringRequestHandlers();
+		int numCHKOfferReplys = tracker.getNumCHKOfferReplies();
+		int numSSKOfferReplys = tracker.getNumSSKOfferReplies();
 		int numCHKRequests = numLocalCHKRequests + numRemoteCHKRequests;
 		int numSSKRequests = numLocalSSKRequests + numRemoteSSKRequests;
 		int numCHKInserts = numLocalCHKInserts + numRemoteCHKInserts;
@@ -1256,21 +1219,21 @@ public class StatisticsToadlet extends Toadlet {
 		int darknetSizeEstimateSession = stats.getDarknetSizeEstimate(-1);
 		int darknetSizeEstimate24h = 0;
 		int darknetSizeEstimate48h = 0;
-		if(nodeUptimeSeconds > (24*60*60)) {  // 24 hours
-			darknetSizeEstimate24h = stats.getDarknetSizeEstimate(now - (24*60*60*1000));  // 48 hours
+		if(nodeUptimeSeconds > HOURS.toSeconds(24)) {
+			darknetSizeEstimate24h = stats.getDarknetSizeEstimate(now - HOURS.toMillis(24));
 		}
-		if(nodeUptimeSeconds > (48*60*60)) {  // 48 hours
-			darknetSizeEstimate48h = stats.getDarknetSizeEstimate(now - (48*60*60*1000));  // 48 hours
+		if(nodeUptimeSeconds > HOURS.toSeconds(48)) {
+			darknetSizeEstimate48h = stats.getDarknetSizeEstimate(now - HOURS.toMillis(48));
 		}
 		// Opennet
 		int opennetSizeEstimateSession = stats.getOpennetSizeEstimate(-1);
 		int opennetSizeEstimate24h = 0;
 		int opennetSizeEstimate48h = 0;
-		if (nodeUptimeSeconds > (24 * 60 * 60)) { // 24 hours
-			opennetSizeEstimate24h = stats.getOpennetSizeEstimate(now - (24 * 60 * 60 * 1000)); // 48 hours
+		if (nodeUptimeSeconds > HOURS.toSeconds(24)) {
+			opennetSizeEstimate24h = stats.getOpennetSizeEstimate(now - HOURS.toMillis(24));
 		}
-		if (nodeUptimeSeconds > (48 * 60 * 60)) { // 48 hours
-			opennetSizeEstimate48h = stats.getOpennetSizeEstimate(now - (48 * 60 * 60 * 1000)); // 48 hours
+		if (nodeUptimeSeconds > HOURS.toSeconds(48)) {
+			opennetSizeEstimate48h = stats.getOpennetSizeEstimate(now - HOURS.toMillis(48));
 		}
 		
 		double routingMissDistanceLocal =  stats.routingMissDistanceLocal.currentValue();
@@ -1284,23 +1247,23 @@ public class StatisticsToadlet extends Toadlet {
 		overviewList.addChild("li", "bwlimitDelayTimeRT:\u00a0" + bwlimitDelayTimeRT + "ms");
 		overviewList.addChild("li", "nodeAveragePingTime:\u00a0" + nodeAveragePingTime + "ms");
 		overviewList.addChild("li", "darknetSizeEstimateSession:\u00a0" + darknetSizeEstimateSession + "\u00a0nodes");
-		if(nodeUptimeSeconds > (24*60*60)) {  // 24 hours
+		if(nodeUptimeSeconds > DAYS.toSeconds(1)) {
 			overviewList.addChild("li", "darknetSizeEstimate24h:\u00a0" + darknetSizeEstimate24h + "\u00a0nodes");
 		}
-		if(nodeUptimeSeconds > (48*60*60)) {  // 48 hours
+		if(nodeUptimeSeconds > DAYS.toSeconds(2)) {
 			overviewList.addChild("li", "darknetSizeEstimate48h:\u00a0" + darknetSizeEstimate48h + "\u00a0nodes");
 		}
 		overviewList.addChild("li", "opennetSizeEstimateSession:\u00a0" + opennetSizeEstimateSession + "\u00a0nodes");
-		if (nodeUptimeSeconds > (24 * 60 * 60)) { // 24 hours
+		if (nodeUptimeSeconds > DAYS.toSeconds(1)) {
 			overviewList.addChild("li", "opennetSizeEstimate24h:\u00a0" + opennetSizeEstimate24h + "\u00a0nodes");
 		}
-		if (nodeUptimeSeconds > (48 * 60 * 60)) { // 48 hours
+		if (nodeUptimeSeconds > DAYS.toSeconds(2)) {
 			overviewList.addChild("li", "opennetSizeEstimate48h:\u00a0" + opennetSizeEstimate48h + "\u00a0nodes");
 		}
 		if ((numberOfRemotePeerLocationsSeenInSwaps > 0.0) && ((swaps > 0.0) || (noSwaps > 0.0))) {
 			overviewList.addChild("li", "avrConnPeersPerNode:\u00a0" + fix6p6.format(numberOfRemotePeerLocationsSeenInSwaps/(swaps+noSwaps)) + "\u00a0peers");
 		}
-		overviewList.addChild("li", "nodeUptimeSession:\u00a0" + TimeUtil.formatTime(nodeUptimeSeconds * 1000));
+		overviewList.addChild("li", "nodeUptimeSession:\u00a0" + TimeUtil.formatTime(MILLISECONDS.convert(nodeUptimeSeconds, SECONDS)));
 		overviewList.addChild("li", "nodeUptimeTotal:\u00a0" + TimeUtil.formatTime(nodeUptimeTotal));
 		overviewList.addChild("li", "routingMissDistanceLocal:\u00a0" + fix1p4.format(routingMissDistanceLocal));
 		overviewList.addChild("li", "routingMissDistanceRemote:\u00a0" + fix1p4.format(routingMissDistanceRemote));
@@ -1309,6 +1272,10 @@ public class StatisticsToadlet extends Toadlet {
 		overviewList.addChild("li", "routingMissDistanceRT:\u00a0" + fix1p4.format(routingMissDistanceRT));
 		overviewList.addChild("li", "backedOffPercent:\u00a0" + fix3p1pct.format(backedOffPercent));
 		overviewList.addChild("li", "pInstantReject:\u00a0" + fix3p1pct.format(stats.pRejectIncomingInstantly()));
+		overviewList.addChild("li", "pInstantRejectRequestBulk:\u00a0" + fix3p1pct.format(stats.pRejectIncomingInstantlyCHKRequestBulk())+" (CHK) "+fix3p1pct.format(stats.pRejectIncomingInstantlySSKRequestBulk())+" (SSK)");
+		overviewList.addChild("li", "pInstantRejectInsertBulk:\u00a0" + fix3p1pct.format(stats.pRejectIncomingInstantlyCHKInsertBulk())+" (CHK) "+fix3p1pct.format(stats.pRejectIncomingInstantlySSKInsertBulk())+" (SSK)");
+		overviewList.addChild("li", "pInstantRejectRequestRT:\u00a0" + fix3p1pct.format(stats.pRejectIncomingInstantlyCHKRequestRT())+" (CHK) "+fix3p1pct.format(stats.pRejectIncomingInstantlySSKRequestRT())+" (SSK)");
+		overviewList.addChild("li", "pInstantRejectInsertRT:\u00a0" + fix3p1pct.format(stats.pRejectIncomingInstantlyCHKInsertRT())+" (CHK) "+fix3p1pct.format(stats.pRejectIncomingInstantlySSKInsertRT())+" (SSK)");
 		overviewList.addChild("li", "unclaimedFIFOSize:\u00a0" + node.getUnclaimedFIFOSize());
 		overviewList.addChild("li", "RAMBucketPoolSize:\u00a0" + SizeUtil.formatSize(core.tempBucketFactory.getRamUsed())+ " / "+ SizeUtil.formatSize(core.tempBucketFactory.getMaxRamUsed()));
 		overviewList.addChild("li", "uptimeAverage:\u00a0" + fix3p1pct.format(node.uptime.getUptime()));
@@ -1335,9 +1302,9 @@ public class StatisticsToadlet extends Toadlet {
 
 		LinkedHashMap<String, ThreadBunch> map = new LinkedHashMap<String, ThreadBunch>();
 		int totalCount = 0;
-		for(int i=0;i<threads.length;i++) {
-			if(threads[i] == null) break;
-			String name = NativeThread.normalizeName(threads[i].getName());
+		for(Thread thread: threads) {
+			if(thread == null) break;
+			String name = NativeThread.normalizeName(thread.getName());
 			ThreadBunch bunch = map.get(name);
 			if(bunch != null) {
 				bunch.count++;
@@ -1357,9 +1324,9 @@ public class StatisticsToadlet extends Toadlet {
 
 		});
 		double thisThreadPercentOfTotal;
-		for(int i=0; i<bunches.length; i++) {
-			thisThreadPercentOfTotal = ((double) bunches[i].count) / ((double) totalCount);
-			threadUsageList.addChild("li", "" + bunches[i].name + ":\u00a0" + Integer.toString(bunches[i].count) + "\u00a0(" + fix3p1pct.format(thisThreadPercentOfTotal) + ')');
+		for(ThreadBunch bunch: bunches) {
+			thisThreadPercentOfTotal = ((double) bunch.count) / ((double) totalCount);
+			threadUsageList.addChild("li", "" + bunch.name + ":\u00a0" + Integer.toString(bunch.count) + "\u00a0(" + fix3p1pct.format(thisThreadPercentOfTotal) + ')');
 		}
 	}
 
@@ -1375,8 +1342,24 @@ public class StatisticsToadlet extends Toadlet {
 	private final static int PEER_CIRCLE_RADIUS = 100;
 	private final static int PEER_CIRCLE_INNER_RADIUS = 60;
 	private final static int PEER_CIRCLE_ADDITIONAL_FREE_SPACE = 10;
-	private final static long MAX_CIRCLE_AGE_THRESHOLD = 24l*60*60*1000;   // 24 hours
+	private final static long MAX_CIRCLE_AGE_THRESHOLD = HOURS.toMillis(24);
 	private final static int HISTOGRAM_LENGTH = 10;
+	
+	private int simpleHistogramDivisor(int[] a) {
+		int max = 1;
+		for (int i = 0; i < a.length; i++) {
+			if (a[i] > max) max = a[i];
+		}
+		return max;
+	}
+	
+	private int combinedHistogramDivisor(int[] a, int[] b) {
+		int max = 1;
+		for (int i = 0; i < a.length; i++) {
+			if (a[i] + b[i] > max) max = a[i] + b[i];
+		}
+		return max;
+	}
 
 	private void addNodeCircle (HTMLNode circleTable, double myLocation) {
 		int[] histogram = new int[HISTOGRAM_LENGTH];
@@ -1408,9 +1391,7 @@ public class StatisticsToadlet extends Toadlet {
 		long now = System.currentTimeMillis();
 		long age = 1;
 		int histogramIndex;
-		int nodeCount = 0;
 		for(int i=0; i<locations.length; i++){
-			nodeCount += 1;
 			location = locations[i];
 			locationTime = timestamps[i];
 			age = now - locationTime.longValue();
@@ -1425,22 +1406,24 @@ public class StatisticsToadlet extends Toadlet {
 		}
 		nodeCircleInfoboxContent.addChild("span", new String[] { "style", "class" }, new String[] { generatePeerCircleStyleString(myLocation, true, 1.0), "me" }, "x");
 		//
+		int histogramDiv = simpleHistogramDivisor(histogram); // Prevent division by 0 on empty histograms.
 		double histogramPercent;
 		for (int i = 0; i < HISTOGRAM_LENGTH; i++) {
 			nodeHistogramLegendCell = nodeHistogramLegendTableRow.addChild("td");
 			nodeHistogramGraphCell = nodeHistogramGraphTableRow.addChild("td", "style", "height: 100px;");
 			nodeHistogramLegendCell.addChild("div", "class", "histogramLabel").addChild("#", fix1p1.format(((double) i) / HISTOGRAM_LENGTH ));
-			histogramPercent = nodeCount==0 ? 0 : ((double)histogram[ i ] / nodeCount);
+			histogramPercent = (double)histogram[i] / histogramDiv;
 			
 			// Don't use HTMLNode here to speed things up
 			nodeHistogramGraphCell.addChild("%", "<div class=\"histogramConnected\" style=\"height: " + fix3pctUS.format(histogramPercent) + "; width: 100%;\">\u00a0</div>");
 		}
 	}
 	
-	private void addSpecialisation(HTMLNode table, double peerLocation, int incomingRequestsCount, int[] incomingRequestLocation) {
+	private void addSpecialisation(HTMLNode table, double peerLocation, int[] incomingRequestLocation) {
 		HTMLNode nodeHistogramLegendTableRow = table.addChild("tr");
 		HTMLNode nodeHistogramGraphTableRow = table.addChild("tr");
 		int myIndex = (int)(peerLocation * incomingRequestLocation.length);
+		int histogramDiv = simpleHistogramDivisor(incomingRequestLocation);
 		for (int i = 0; i<incomingRequestLocation.length; i++) {
 			HTMLNode nodeHistogramLegendCell = nodeHistogramLegendTableRow.addChild("td");
 			HTMLNode nodeHistogramGraphCell = nodeHistogramGraphTableRow.addChild("td", "style", "height: 100px;");
@@ -1448,15 +1431,16 @@ public class StatisticsToadlet extends Toadlet {
 			if(i == myIndex)
 				 nodeHistogramGraphCell2 = nodeHistogramGraphCell2.addChild("span", "class", "me");
 			nodeHistogramGraphCell2.addChild("#", fix1p1.format(((double) i) / incomingRequestLocation.length ));
-			nodeHistogramGraphCell.addChild("div", new String[] { "class", "style" }, new String[] { "histogramConnected", "height: " + fix3pctUS.format(((double)incomingRequestLocation[i]) / incomingRequestsCount) + "; width: 100%;" }, "\u00a0");
+			nodeHistogramGraphCell.addChild("div", new String[] { "class", "style" }, new String[] { "histogramConnected", "height: " + fix3pctUS.format(((double)incomingRequestLocation[i]) / histogramDiv) + "; width: 100%;" }, "\u00a0");
 		}
 	}
 	
-	private void addCombinedSpecialisation(HTMLNode table, double peerLocation, int locallyOriginatingRequestsCount, int[] locallyOriginatingRequests, int remotelyOriginatingRequestsCount, int[] remotelyOriginatingRequests) {
+	private void addCombinedSpecialisation(HTMLNode table, double peerLocation, int[] locallyOriginatingRequests, int[] remotelyOriginatingRequests) {
 		assert(locallyOriginatingRequests.length == remotelyOriginatingRequests.length);
 		HTMLNode nodeHistogramLegendTableRow = table.addChild("tr");
 		HTMLNode nodeHistogramGraphTableRow = table.addChild("tr");
 		int myIndex = (int)(peerLocation * locallyOriginatingRequests.length);
+		int histogramDiv = combinedHistogramDivisor(locallyOriginatingRequests, remotelyOriginatingRequests);
 		for (int i = 0; i<locallyOriginatingRequests.length; i++) {
 			HTMLNode nodeHistogramLegendCell = nodeHistogramLegendTableRow.addChild("td");
 			HTMLNode nodeHistogramGraphCell = nodeHistogramGraphTableRow.addChild("td", "style", "height: 100px;");
@@ -1467,15 +1451,57 @@ public class StatisticsToadlet extends Toadlet {
 			nodeHistogramGraphCell.addChild("div",
 				new String[] { "class", "style" },
 				new String[] { "histogramConnected", "height: " +
-					fix3pctUS.format(((double)locallyOriginatingRequests[i]) / locallyOriginatingRequestsCount) +
+					fix3pctUS.format(((double)locallyOriginatingRequests[i]) / histogramDiv) +
 					"; width: 100%;" },
 				"\u00a0");
 			nodeHistogramGraphCell.addChild("div",
 				new String[] { "class", "style" },
 				new String[] { "histogramDisconnected", "height: " +
-					fix3pctUS.format(((double)remotelyOriginatingRequests[i]) / remotelyOriginatingRequestsCount) +
+					fix3pctUS.format(((double)remotelyOriginatingRequests[i]) / histogramDiv) +
 					"; width: 100%;" },
 				"\u00a0");
+		}
+	}
+
+	private void addFOAFLinkLengthHistogram(HTMLNode circleTable, PeerNodeStatus[] peerNodeStatuses) {
+		int[] peersLinkHistogram = new int[HISTOGRAM_LENGTH];
+		
+		HTMLNode peerHistogramLegendTableRow = circleTable.addChild("tr");
+		HTMLNode peerHistogramGraphTableRow = circleTable.addChild("tr");
+		HTMLNode peerHistogramLegendCell;
+		HTMLNode peerHistogramGraphCell;
+
+		int peersLinkCount = 0;
+		for (PeerNodeStatus pns : peerNodeStatuses) {
+			if (!pns.isSearchable()) continue;
+			if (!pns.isRoutable()) continue;
+
+			double peerLoc = pns.getLocation();
+			if (!Location.isValid(peerLoc)) continue;
+
+			double[] foafLocs = pns.getPeersLocation();
+			if (foafLocs == null) continue;
+			
+			for (double foafLoc : foafLocs) {
+				if (!Location.isValid(foafLoc)) continue;
+				
+				int idx = (int)Math.floor(Location.distance(peerLoc, foafLoc) * HISTOGRAM_LENGTH / 0.5);
+				peersLinkHistogram[idx]++;
+				peersLinkCount++;
+			}
+		}
+		
+		double cumulativeFraction = 0;
+		for (int i = 0; i < HISTOGRAM_LENGTH; i++) {
+			peerHistogramLegendCell = peerHistogramLegendTableRow.addChild("td");
+			peerHistogramGraphCell = peerHistogramGraphTableRow.addChild("td", "style", "height: 100px;");
+			peerHistogramLegendCell.addChild("div", "class", "histogramLabel").addChild("#", fix1p2.format(((double)i) / HISTOGRAM_LENGTH * 0.5));
+			if (peersLinkCount == 0) continue;
+
+			double histogramFraction = ((double)peersLinkHistogram[i]) / peersLinkCount;
+			peerHistogramGraphCell.addChild("div", new String[] { "class", "style" }, new String[] { "histogramConnected", "height: " + fix3pctUS.format(histogramFraction) + "; width: 100%;" }, "\u00a0");
+			peerHistogramGraphCell.addChild("div", new String[] { "class", "style" }, new String[] { "histogramDisconnected", "height: " + fix3pctUS.format(cumulativeFraction) + "; width: 100%;" }, "\u00a0");
+			cumulativeFraction += histogramFraction;
 		}
 	}
 
@@ -1508,7 +1534,6 @@ public class StatisticsToadlet extends Toadlet {
 		double peerDistance;
 		int histogramIndex;
 		int peerCount = peerNodeStatuses.length;
-		int newPeerCount = 0;
 		for (int peerIndex = 0; peerIndex < peerCount; peerIndex++) {
 			peerNodeStatus = peerNodeStatuses[peerIndex];
 			peerLocation = peerNodeStatus.getLocation();
@@ -1521,7 +1546,6 @@ public class StatisticsToadlet extends Toadlet {
 					peerCircleInfoboxContent.addChild("span", new String[] { "style", "class" }, new String[] { generatePeerCircleStyleString(foafLocation, false, 0.9), "disconnected" }, ".");
 				}
 			}
-			newPeerCount++;
 			peerDistance = Location.distance( myLocation, peerLocation );
 			histogramIndex = (int) (Math.floor(peerDistance * HISTOGRAM_LENGTH * 2));
 			if (peerNodeStatus.isConnected()) {
@@ -1533,16 +1557,17 @@ public class StatisticsToadlet extends Toadlet {
 		}
 		peerCircleInfoboxContent.addChild("span", new String[] { "style", "class" }, new String[] { generatePeerCircleStyleString(myLocation, true, 1.0), "me" }, "x");
 		//
+		int histogramDiv = combinedHistogramDivisor(histogramConnected, histogramDisconnected);
 		double histogramPercent;
 		for (int i = 0; i < HISTOGRAM_LENGTH; i++) {
 			peerHistogramLegendCell = peerHistogramLegendTableRow.addChild("td");
 			peerHistogramGraphCell = peerHistogramGraphTableRow.addChild("td", "style", "height: 100px;");
 			peerHistogramLegendCell.addChild("div", "class", "histogramLabel").addChild("#", fix1p2.format(((double) i) / ( HISTOGRAM_LENGTH * 2 )));
 			//
-			histogramPercent = ((double) histogramConnected[ i ] ) / newPeerCount;
+			histogramPercent = ((double) histogramConnected[ i ] ) / histogramDiv;
 			peerHistogramGraphCell.addChild("div", new String[] { "class", "style" }, new String[] { "histogramConnected", "height: " + fix3pctUS.format(histogramPercent) + "; width: 100%;" }, "\u00a0");
 			//
-			histogramPercent = ((double) histogramDisconnected[ i ] ) / newPeerCount;
+			histogramPercent = ((double) histogramDisconnected[ i ] ) / histogramDiv;
 			peerHistogramGraphCell.addChild("div", new String[] { "class", "style" }, new String[] { "histogramDisconnected", "height: " + fix3pctUS.format(histogramPercent) + "; width: 100%;" }, "\u00a0");
 		}
 	}

@@ -3,13 +3,12 @@
 * http://www.gnu.org/ for further details of the GPL. */
 package freenet.support.compress;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.UnsupportedEncodingException;
 
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
@@ -17,8 +16,8 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 import freenet.support.Logger;
 import freenet.support.api.Bucket;
 import freenet.support.api.BucketFactory;
+import freenet.support.io.Closer;
 import freenet.support.io.CountedOutputStream;
-import freenet.support.io.NoCloseProxyOutputStream;
 import freenet.support.io.HeaderStreams;
 
 /**
@@ -28,10 +27,16 @@ import freenet.support.io.HeaderStreams;
 ** rather than commons-compress) the compressed streams **DO NOT** have the
 ** standard "BZ" header.
 */
-// WARNING: THIS CLASS IS STORED IN DB4O -- THINK TWICE BEFORE ADD/REMOVE/RENAME FIELDS
 public class Bzip2Compressor implements Compressor {
 
-	final public static byte[] BZ_HEADER = "BZ".getBytes();
+	final public static byte[] BZ_HEADER;
+	static {
+		try {
+			BZ_HEADER = "BZ".getBytes("ISO-8859-1");
+		} catch (UnsupportedEncodingException e) {
+			throw new Error(e); // Impossible!
+		}
+	}
 
 	@Override
 	public Bucket compress(Bucket data, BucketFactory bf, long maxReadLength, long maxWriteLength) throws IOException, CompressionOutputSizeException {
@@ -42,13 +47,12 @@ public class Bzip2Compressor implements Compressor {
 			is = data.getInputStream();
 			os = output.getOutputStream();
 			compress(is, os, maxReadLength, maxWriteLength);
-			is.close();
-			is = null;
-			os.close();
-			os = null;
+			// It is essential that the close()'s throw if there is any problem.
+			is.close(); is = null;
+			os.close(); os = null;
 		} finally {
-			if(is != null) is.close();
-			if(os != null) os.close();
+			Closer.close(is);
+			Closer.close(os);
 		}
 		return output;
 	}
@@ -57,18 +61,17 @@ public class Bzip2Compressor implements Compressor {
 	public long compress(InputStream is, OutputStream os, long maxReadLength, long maxWriteLength) throws IOException, CompressionOutputSizeException {
 		if(maxReadLength <= 0)
 			throw new IllegalArgumentException();
-		BufferedInputStream bis = new BufferedInputStream(is, 32768);
 		BZip2CompressorOutputStream bz2os = null;
 		try {
 			CountedOutputStream cos = new CountedOutputStream(os);
-			bz2os = new BZip2CompressorOutputStream(HeaderStreams.dimOutput(BZ_HEADER, new BufferedOutputStream(cos, 32768)));
+			bz2os = new BZip2CompressorOutputStream(HeaderStreams.dimOutput(BZ_HEADER, cos));
 			long read = 0;
 			// Bigger input buffer, so can compress all at once.
 			// Won't hurt on I/O either, although most OSs will only return a page at a time.
 			byte[] buffer = new byte[32768];
 			while(true) {
 				int l = (int) Math.min(buffer.length, maxReadLength - read);
-				int x = l == 0 ? -1 : bis.read(buffer, 0, buffer.length);
+				int x = l == 0 ? -1 : is.read(buffer, 0, buffer.length);
 				if(x <= -1) break;
 				if(x == 0) throw new IOException("Returned zero from read()");
 				bz2os.write(buffer, 0, x);
@@ -94,7 +97,7 @@ public class Bzip2Compressor implements Compressor {
 	
 	@Override
 	public long decompress(InputStream is, OutputStream os, long maxLength, long maxCheckSizeBytes) throws IOException, CompressionOutputSizeException {
-		BZip2CompressorInputStream bz2is = new BZip2CompressorInputStream(HeaderStreams.augInput(BZ_HEADER, new BufferedInputStream(is)));
+		BZip2CompressorInputStream bz2is = new BZip2CompressorInputStream(HeaderStreams.augInput(BZ_HEADER, is));
 		long written = 0;
 		int bufSize = 32768;
 		if(maxLength > 0 && maxLength < bufSize)

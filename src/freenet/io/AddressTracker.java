@@ -15,6 +15,10 @@
  */
 package freenet.io;
 
+import static java.util.concurrent.TimeUnit.HOURS;
+import static java.util.concurrent.TimeUnit.MINUTES;
+import static java.util.concurrent.TimeUnit.SECONDS;
+
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
@@ -81,7 +85,7 @@ public class AddressTracker {
 		} catch (IOException e) {
 			// Fall through
 		} catch (FSParseException e) {
-			Logger.error(AddressTracker.class, "Failed to load from disk for port "+port+": "+e, e);
+			Logger.warning(AddressTracker.class, "Failed to load from disk for port "+port+": "+e, e);
 			// Fall through
 		} finally {
 			if(fis != null)
@@ -108,7 +112,8 @@ public class AddressTracker {
 		if(version != 2)
 			throw new FSParseException("Unknown Version "+version);
 		long savedBootID = fs.getLong("BootID");
-		if(savedBootID != lastBootID) throw new FSParseException("Wrong boot ID - maybe unclean shutdown? Last was "+lastBootID+" stored "+savedBootID);
+		if(savedBootID != lastBootID) throw new FSParseException("Unable to load address tracker table, assuming an unclean shutdown: Last ID was " +
+				lastBootID+" but stored "+savedBootID);
 		// Sadly we don't know whether there were packets arriving during the gap,
 		// and some insecure firewalls will use incoming packets to keep tunnels open
 		//timeDefinitelyNoPacketsReceived = fs.getLong("TimeDefinitelyNoPacketsReceived");
@@ -228,13 +233,13 @@ public class AddressTracker {
 	
 	/** If the minimum gap is at least this, we might be port forwarded.
 	 * RFC 4787 requires at least 2 minutes, but many NATs have shorter timeouts. */
-	public final static long MAYBE_TUNNEL_LENGTH = ((5 * 60) + 1) * 1000L;
+	public final static long MAYBE_TUNNEL_LENGTH = MINUTES.toMillis(5) + SECONDS.toMillis(1);
 	/** If the minimum gap is at least this, we are almost certainly port forwarded.
 	 * Some stateful firewalls do at least 30 minutes. Hopefully the below is
 	 * sufficiently over the top! */
-	public final static long DEFINITELY_TUNNEL_LENGTH = (12 * 60 + 1) * 60 * 1000L;
+	public final static long DEFINITELY_TUNNEL_LENGTH = HOURS.toMillis(12) + MINUTES.toMillis(1);
 	/** Time after which we ignore evidence that we are port forwarded */
-	public static final long HORIZON = 24*60*60*1000L;
+	public static final long HORIZON = HOURS.toMillis(24);
 
 	public long getLongestSendReceiveGap() {
 		return getLongestSendReceiveGap(HORIZON);
@@ -249,8 +254,7 @@ public class AddressTracker {
 		long longestGap = -1;
 		long now = System.currentTimeMillis();
 		PeerAddressTrackerItem[] items = getPeerAddressTrackerItems();
-		for(int i=0;i<items.length;i++) {
-			PeerAddressTrackerItem item = items[i];
+		for(PeerAddressTrackerItem item: items) {
 			if(item.packetsReceived() <= 0) continue;
 			if(!item.peer.isRealInternetAddress(false, false, false)) continue;
 			longestGap = Math.max(longestGap, item.longestGap(horizon, now));

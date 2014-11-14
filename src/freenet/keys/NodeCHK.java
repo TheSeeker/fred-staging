@@ -7,8 +7,7 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.DataOutputStream;
 import java.io.IOException;
-
-import com.db4o.ObjectContainer;
+import java.util.Arrays;
 
 import freenet.support.Base64;
 import freenet.support.Fields;
@@ -105,6 +104,10 @@ public class NodeCHK extends Key {
 		System.arraycopy(routingKey, 0, buf, 2, routingKey.length);
 		return buf;
 	}
+	
+	public static byte cryptoAlgorithmFromFullKey(byte[] fullKey) {
+		return fullKey[1];
+	}
 
 	public static byte[] routingKeyFromFullKey(byte[] keyBuf) {
 		if(keyBuf.length == KEY_LENGTH) return keyBuf;
@@ -112,7 +115,7 @@ public class NodeCHK extends Key {
 			Logger.error(NodeCHK.class, "routingKeyFromFullKey() on "+keyBuf.length+" bytes");
 			return null;
 		}
-		if(keyBuf[0] != 1 || keyBuf[1] != Key.ALGO_AES_PCFB_256_SHA256) {
+		if(keyBuf[0] != 1 || (keyBuf[1] != Key.ALGO_AES_PCFB_256_SHA256 && keyBuf[1] != Key.ALGO_AES_CTR_256_SHA256)) {
 			if(keyBuf[keyBuf.length-1] == 0 && keyBuf[keyBuf.length-2] == 0) {
 				// We are certain it's a routing-key
 				Logger.minor(NodeCHK.class, "Recovering routing-key stored wrong as full-key (two nulls at end)");
@@ -120,13 +123,9 @@ public class NodeCHK extends Key {
 				// It might be a routing-key or it might be random data
 				Logger.error(NodeCHK.class, "Maybe recovering routing-key stored wrong as full-key");
 			}
-			byte[] out = new byte[KEY_LENGTH];
-			System.arraycopy(keyBuf, 0, out, 0, KEY_LENGTH);
-			return out;
+			return Arrays.copyOf(keyBuf, KEY_LENGTH);
 		}
-		byte[] out = new byte[KEY_LENGTH];
-		System.arraycopy(keyBuf, 2, out, 0, KEY_LENGTH);
-		return out;
+		return Arrays.copyOfRange(keyBuf, 2, 2 + KEY_LENGTH);
 	}
 
 	@Override
@@ -134,11 +133,6 @@ public class NodeCHK extends Key {
 		if(arg0 instanceof NodeSSK) return 1;
 		NodeCHK key = (NodeCHK) arg0;
 		return Fields.compareBytes(routingKey, key.routingKey);
-	}
-
-	@Override
-	public void removeFrom(ObjectContainer container) {
-		container.delete(this);
 	}
 
 	@Override

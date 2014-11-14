@@ -161,12 +161,12 @@ public final class ISO639_3 {
 		
 		@Override
 		public String toString() {
-			return new String(id) + " = " + referenceName + " (scope: " + scope + "; type: " + type + ")";
+			return id + " = " + referenceName + " (scope: " + scope + "; type: " + type + ")";
 		}
 
 	}
 	
-	private static final Hashtable<String, LanguageCode> loadFromTabFile() {
+	private static Hashtable<String, LanguageCode> loadFromTabFile() {
 		final Hashtable<String, LanguageCode> codes = new Hashtable<String, LanguageCode>(7705 * 2);
 
 		InputStream in = null;

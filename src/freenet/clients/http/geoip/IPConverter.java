@@ -4,12 +4,16 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.lang.ref.SoftReference;
 import java.lang.ref.WeakReference;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import freenet.clients.http.StaticToadlet;
 import freenet.node.Node;
+import freenet.support.HTMLNode;
 import freenet.support.Logger;
 
 public class IPConverter {
@@ -18,18 +22,19 @@ public class IPConverter {
 	final int MAX_ENTRIES = 100;
 	// Local cache
 	@SuppressWarnings("serial")
-	private final HashMap<Long, Country> cache = new LinkedHashMap<Long, Country>() {
+	private final HashMap<Integer, Country> cache = new LinkedHashMap<Integer, Country>() {
 		@Override
-		protected boolean removeEldestEntry(Map.Entry<Long, Country> eldest) {
+		protected boolean removeEldestEntry(Map.Entry<Integer, Country> eldest) {
 			return size() > MAX_ENTRIES;
 		}
 	};
 	// Cached DB file content
-	private WeakReference<Cache> fullCache;
+	private SoftReference<Cache> fullCache;
 	// Reference to singleton object
 	private static IPConverter instance;
 	// File containing IP ranges
 	private File dbFile;
+	private boolean dbFileCorrupt;
 
 	public enum Country {
 		L0("localhost"), I0("IntraNet"), A1("Anonymous Proxy"), A2(
@@ -106,8 +111,8 @@ public class IPConverter {
 				"SEYCHELLES "), SL("SIERRA LEONE "), SG("SINGAPORE "), SX(
 				"SINT MAARTEN (DUTCH PART) "), SK("SLOVAKIA "), SI("SLOVENIA "), SB(
 				"SOLOMON ISLANDS "), SO("SOMALIA "), ZA("SOUTH AFRICA "), GS(
-				"SOUTH GEORGIA AND THE SOUTH SANDWICH ISLANDS "), ES("SPAIN "), LK(
-				"SRI LANKA "), SD("SUDAN "), SR("SURINAME "), SJ(
+				"SOUTH GEORGIA AND THE SOUTH SANDWICH ISLANDS "), SS("SOUTH SUDAN"), ES(
+				"SPAIN "), LK("SRI LANKA "), SD("SUDAN "), SR("SURINAME "), SJ(
 				"SVALBARD AND JAN MAYEN "), SZ("SWAZILAND "), SE("SWEDEN "), CH(
 				"SWITZERLAND "), SY("SYRIAN ARAB REPUBLIC "), TW(
 				"TAIWAN, PROVINCE OF CHINA "), TJ("TAJIKISTAN "), TZ(
@@ -124,6 +129,8 @@ public class IPConverter {
 				"WALLIS AND FUTUNA "), EH("WESTERN SAHARA "), YE("YEMEN "), ZM(
 				"ZAMBIA "), ZW("ZIMBABWE "), ZZ("NA"), EU("European Union");
 		private String name;
+		private boolean hasFlag;
+		private boolean checkedHasFlag;
 
 		Country(String name) {
 			this.name = name;
@@ -132,6 +139,36 @@ public class IPConverter {
 		public String getName() {
 			return name;
 		}
+
+		public void renderFlagIcon(HTMLNode parent) {
+			String flagPath = getFlagIconPath();
+			if(flagPath != null)
+				parent.addChild("img", new String[] { "src", "title" }, new String[] { StaticToadlet.ROOT_URL + flagPath, getName()});
+		}
+		
+		public boolean hasFlagIcon() {
+			return getFlagIconPath() != null;
+		}
+		
+		/** Doesn't check whether it exists. Relative to the top of staticfiles. */
+		private String flagIconPath() {
+			return "icon/flags/"+toString().toLowerCase()+".png";
+		}
+		
+		/** Relative to top of static files */
+		public String getFlagIconPath() {
+			String flagPath = flagIconPath();
+			synchronized(this) {
+				if(!checkedHasFlag) {
+					hasFlag = StaticToadlet.haveFile(flagPath);
+					checkedHasFlag = true;
+				}
+				return hasFlag ? flagPath : null;
+			}
+		}
+
+		/** cached values(). Never modify or pass this array to outside code! */
+		private static final Country[] values = values();
 	}
 
 	// Base85 Decoding table
@@ -143,6 +180,16 @@ public class IPConverter {
 			'x', 'y', 'z', '.', ',', ';', '\'', '"', '`', '<', '>', '{', '}',
 			'[', ']', '=', '+', '-', '~', '*', '@', '#', '%', '$', '&', '!',
 			'?' };
+	private final static int base = base85.length;
+	// XXX this is actually base86, not base85!
+	private final static byte[] base85inv = new byte [128-32];
+	static {
+		Arrays.fill(base85inv, (byte)-1);
+		for(int i = 0; i < base85.length; i++) {
+			assert(base85[i] >= (char)32 && base85[i] < (char)128);
+			base85inv[(int)base85[i]-32] = (byte)i;
+		}
+	}
 
 	/**
 	 * Constructs a new {@link IPConverter}
@@ -190,19 +237,23 @@ public class IPConverter {
 			int size = line.length() / 7;
 			// Arrays to form a Cache
 			short[] codes = new short[size];
-			long[] ips = new long[size];
+			int[] ips = new int[size];
 			// Read ips and add it to ip table
-			for (int i = 0; i < size; i++) {
-				int offset = i * 7;
-				String iprange = line.substring(offset, offset + 7);
+			for (int i = 0, offset = 0; i < size; i++, offset += 7) {
 				// Code
-				String code = iprange.substring(0, 2);
+				String code = line.substring(offset, offset + 2);
 				// Ip
-				String ipcode = iprange.substring(2);
-				long ip = decodeBase85(ipcode.getBytes());
-				Country country = Country.valueOf(code);
-				codes[i] = (short) country.ordinal();
-				ips[i] = ip;
+				String ipcode = line.substring(offset + 2, offset + 7);
+				long ip = decodeBase85(ipcode.getBytes("ISO-8859-1"));
+				try {
+					Country country = Country.valueOf(code);
+					codes[i] = (short) country.ordinal();
+				} catch (IllegalArgumentException e) {
+					// Does not invalidate the whole file, just means the country list is out of date.
+					Logger.error(this, "Country not in list: "+code);
+					codes[i] = (short)-1;
+				}
+				ips[i] = (int)ip;
 			}
 			raf.close();
 			return new Cache(codes, ips);
@@ -211,6 +262,11 @@ public class IPConverter {
 			Logger.warning(this, "Database file not found!", e);
 		} catch (IOException e) {
 			Logger.error(this, e.getMessage());
+		} catch (IPConverterParseException e) {
+			Logger.error(this, "IP to country datbase file is corrupt: "+e, e);
+			// Don't try again until next restart.
+			// FIXME add a callback to clear the flag when we download a new copy.
+			dbFileCorrupt = true;
 		}
 		return null;
 	}
@@ -247,35 +303,81 @@ public class IPConverter {
 	 */
 	public Country locateIP(String ip) {
 		if(ip == null) return null;
-		Cache memCache = getCache();
 		long longip;
 		try {
 			longip = ip2num(ip);
 		} catch (NumberFormatException e) {
 			return null; // Not an IP address.
 		}
-		// Check cache first
-		if (cache.containsKey(longip)) {
-			return cache.get(longip);
+		return locateIP(longip);
+	}
+
+	public Country locateIP(byte[] ip) {
+		if(ip == null) return null;
+		if(ip.length == 16) {
+			/* Convert some special IPv6 addresses to IPv4 */
+			if(ip[0] == (byte)0x20 && ip[1] == (byte)0x02) {
+				// 2002::/16, 6to4 tunnels
+				ip = Arrays.copyOfRange(ip, 2,6);
+			} else if((	ip[ 0] == (byte)0 && ip[ 1] == (byte)0 &&
+						ip[ 2] == (byte)0 && ip[ 3] == (byte)0 &&
+						ip[ 4] == (byte)0 && ip[ 5] == (byte)0 &&
+						ip[ 6] == (byte)0 && ip[ 7] == (byte)0 &&
+						ip[ 8] == (byte)0 && ip[ 9] == (byte)0 &&
+						ip[10] == (byte)0 && ip[11] == (byte)0)) {
+				// ::/96, deprecated IPv4-compatible IPv6
+				ip = Arrays.copyOfRange(ip, 12,16);
+			} else if(( ip[0] == (byte)0x20 && ip[1] == (byte)0x01 &&
+						ip[2] == (byte)0x00 && ip[3] == (byte)0x00)) {
+				// 2001:0::/32, Teredo tunnels
+				//  4..8  = server adderss
+				//  9..10 = flags
+				// 10..11 = client port (inverted)
+				// 12..16 = client address (inverted)
+				ip = Arrays.copyOfRange(ip, 12, 16);
+				ip[0] ^= (byte)0xff; // deinvert
+				ip[1] ^= (byte)0xff;
+				ip[2] ^= (byte)0xff;
+				ip[3] ^= (byte)0xff;
+			}
+			/* we cannot handle other IPv6 addresses (yet) */
 		}
+		if(ip.length != 4) return null;
+		long longip = (
+				((ip[0] << 24) & 0xff000000l) |
+				((ip[1] << 16) & 0x00ff0000l) |
+				((ip[2] <<  8) & 0x0000ff00l) |
+				( ip[3]        & 0x000000ffl));
+		return locateIP(longip);
+	}
+
+	private Country locateIP(long longip) {
+		// Check cache first
+		Country cached = cache.get((int)longip);
+		if (cached != null) {
+			return cached;
+		}
+		Cache memCache = getCache();
 		if(memCache == null) return null;
-		long[] ips = memCache.getIps();
+		int[] ips = memCache.getIps();
 		short[] codes = memCache.getCodes();
 		// Binary search
 		int start = 0;
 		int last = ips.length - 1;
 		int mid;
-		while ((mid = Math.round((last - start) / 2)) > 0) {
+		while ((mid = (last - start) / 2) > 0) {
 			int midpos = mid + start;
-			if (longip >= ips[midpos]) {
+			long midip = ips[midpos] & 0xffffffffl;
+			if (longip >= midip) {
 				last = midpos;
 			} else {
 				start = midpos;
 			}
 		}
 		short countryOrdinal = codes[last];
-		Country country = Country.values()[countryOrdinal];
-		cache.put(longip, country);
+		if(countryOrdinal < 0) return null;
+		Country country = Country.values[countryOrdinal];
+		cache.put((int)longip, country);
 		return country;
 	}
 
@@ -290,7 +392,8 @@ public class IPConverter {
 			if(fullCache != null)
 				memCache = fullCache.get();
 			if(memCache == null) {
-				fullCache = new WeakReference<Cache>(memCache = readRanges());
+				if(dbFileCorrupt) return null;
+				fullCache = new SoftReference<Cache>(memCache = readRanges());
 			}
 		}
 		return memCache;
@@ -302,35 +405,18 @@ public class IPConverter {
 	 * @param code
 	 *            encoded bytes
 	 * @return decoded long
+	 * @throws IPConverterParseException 
 	 */
-	private long decodeBase85(byte[] code) {
+	private long decodeBase85(byte[] code) throws IPConverterParseException {
 		long result = 0;
-		int base = base85.length;
 		if (code.length != 5)
-			return result;
-		long coef = 1;
-		for (int i = 4; i >= 0; i--) {
-			Integer value = getBaseIndex(code[i]);
-			result += value * coef;
-			coef *= base;
+			throw new IPConverterParseException();
+		for (int i = 0; i < code.length; i++) {
+			if (code[i] < (byte)32 || base85inv[code[i] - 32] < (byte)0)
+				throw new IPConverterParseException();
+			result = (result * base) + base85inv[code[i] - 32];
 		}
 		return result;
-	}
-
-	/**
-	 * Returns index of given character in base85 table, used for decoding.
-	 * 
-	 * @param c
-	 *            Character to find index
-	 * @return index of given char
-	 * @see #decodeBase85(byte[])
-	 */
-	private int getBaseIndex(byte c) {
-		for (int i = 0; i < base85.length; i++) {
-			if (c == base85[i])
-				return i;
-		}
-		return -1;
 	}
 	
 	/**

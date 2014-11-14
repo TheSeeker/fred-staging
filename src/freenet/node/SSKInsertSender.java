@@ -3,6 +3,8 @@
  * http://www.gnu.org/ for further details of the GPL. */
 package freenet.node;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
+
 import freenet.crypt.DSAPublicKey;
 import freenet.crypt.SHA256;
 import freenet.io.comm.AsyncMessageCallback;
@@ -13,14 +15,11 @@ import freenet.io.comm.Message;
 import freenet.io.comm.MessageFilter;
 import freenet.io.comm.NotConnectedException;
 import freenet.io.comm.PeerContext;
-import freenet.io.comm.PeerRestartedException;
 import freenet.io.comm.SlowAsyncMessageFilterCallback;
-import freenet.io.xfer.WaitedTooLongException;
 import freenet.keys.NodeSSK;
 import freenet.keys.SSKBlock;
 import freenet.keys.SSKVerifyException;
 import freenet.support.Logger;
-import freenet.support.OOMHandler;
 import freenet.support.ShortBuffer;
 import freenet.support.io.NativeThread;
 
@@ -34,7 +33,7 @@ import freenet.support.io.NativeThread;
 public class SSKInsertSender extends BaseSender implements PrioRunnable, AnyInsertSender, ByteCounter {
 
     // Constants
-    static final int ACCEPTED_TIMEOUT = 10000;
+    static final long ACCEPTED_TIMEOUT = SECONDS.toMillis(10);
 
     // Basics
     final NodeSSK myKey;
@@ -111,11 +110,7 @@ public class SSKInsertSender extends BaseSender implements PrioRunnable, AnyInse
 	    freenet.support.Logger.OSThread.logPID(this);
         origTag.startedSender();
         try {
-        	routeRequests();
-		} catch (OutOfMemoryError e) {
-			OOMHandler.handleOOM(e);
-            if(status == NOT_FINISHED)
-            	finish(INTERNAL_ERROR, null);
+            routeRequests();
         } catch (Throwable t) {
             Logger.error(this, "Caught "+t, t);
             if(status == NOT_FINISHED)
@@ -194,7 +189,7 @@ public class SSKInsertSender extends BaseSender implements PrioRunnable, AnyInse
 				forkedRequestTag.setAccepted();
             	Logger.normal(this, "FORKING SSK INSERT "+origUID+" to "+uid);
             	nodesRoutedTo.clear();
-            	node.lockUID(forkedRequestTag);
+            	node.tracker.lockUID(forkedRequestTag);
             }
             
             // Route it
@@ -290,8 +285,8 @@ public class SSKInsertSender extends BaseSender implements PrioRunnable, AnyInse
     	WAIT,
     	NEXT_PEER
     }
-    
-	private final int TIMEOUT_AFTER_ACCEPTEDREJECTED_TIMEOUT = 60*1000;
+
+	private static final long TIMEOUT_AFTER_ACCEPTEDREJECTED_TIMEOUT = SECONDS.toMillis(60);
 
 	@Override
 	protected void handleAcceptedRejectedTimeout(final PeerNode next, final UIDTag tag) {
@@ -497,7 +492,7 @@ public class SSKInsertSender extends BaseSender implements PrioRunnable, AnyInse
 
 	@Override
 	protected MessageFilter makeAcceptedRejectedFilter(PeerNode next,
-			int acceptedTimeout, UIDTag tag) {
+			long acceptedTimeout, UIDTag tag) {
 		// Use the right UID here, in case we fork.
 		final long uid = tag.uid;
         /*
@@ -698,7 +693,7 @@ public class SSKInsertSender extends BaseSender implements PrioRunnable, AnyInse
 	}
 
 	@Override
-	protected int getAcceptedTimeout() {
+	protected long getAcceptedTimeout() {
 		return ACCEPTED_TIMEOUT;
 	}
 
@@ -735,29 +730,15 @@ public class SSKInsertSender extends BaseSender implements PrioRunnable, AnyInse
         
         try {
 			next.sendAsync(headersMsg, null, this);
-			if(next.isOldFNP()) {
-				next.sendThrottledMessage(dataMsg, data.length, this, SSKInsertHandler.DATA_INSERT_TIMEOUT, false, null);
-			} else {
-				next.sendSync(dataMsg, this, realTimeFlag);
-				sentPayload(data.length);
-			}
+			next.sendSync(dataMsg, this, realTimeFlag);
+			sentPayload(data.length);
 		} catch (NotConnectedException e1) {
 			if(logMINOR) Logger.minor(this, "Not connected to "+next);
 			next.noLongerRoutingTo(thisTag, false);
 			routeRequests();
 			return;
-		} catch (WaitedTooLongException e) {
-			Logger.error(this, "Waited too long to send "+dataMsg+" to "+next+" on "+this);
-			next.noLongerRoutingTo(thisTag, false);
-			routeRequests();
-			return;
 		} catch (SyncSendWaitedTooLongException e) {
 			Logger.error(this, "Waited too long to send "+dataMsg+" to "+next+" on "+this);
-			next.noLongerRoutingTo(thisTag, false);
-			routeRequests();
-			return;
-		} catch (PeerRestartedException e) {
-			if(logMINOR) Logger.minor(this, "Peer restarted: "+next);
 			next.noLongerRoutingTo(thisTag, false);
 			routeRequests();
 			return;
@@ -883,7 +864,7 @@ public class SSKInsertSender extends BaseSender implements PrioRunnable, AnyInse
 	}
 
 	@Override
-	protected int ignoreLowBackoff() {
+	protected long ignoreLowBackoff() {
 		return ignoreLowBackoff ? Node.LOW_BACKOFF : 0;
 	}
 

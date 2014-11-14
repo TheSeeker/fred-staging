@@ -18,6 +18,8 @@
  */
 package freenet.io.xfer;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
+
 import freenet.io.comm.AsyncMessageFilterCallback;
 import freenet.io.comm.ByteCounter;
 import freenet.io.comm.DMT;
@@ -29,15 +31,14 @@ import freenet.io.comm.NotConnectedException;
 import freenet.io.comm.PeerContext;
 import freenet.io.comm.RetrievalException;
 import freenet.io.comm.SlowAsyncMessageFilterCallback;
-import freenet.node.BasePeerNode;
 import freenet.node.PeerNode;
 import freenet.node.SyncSendWaitedTooLongException;
 import freenet.support.BitArray;
 import freenet.support.Buffer;
 import freenet.support.LogThresholdCallback;
 import freenet.support.Logger;
-import freenet.support.Ticker;
 import freenet.support.Logger.LogLevel;
+import freenet.support.Ticker;
 import freenet.support.TimeUtil;
 import freenet.support.io.NativeThread;
 import freenet.support.math.MedianMeanRunningAverage;
@@ -110,39 +111,25 @@ public class BlockReceiver implements AsyncMessageFilterCallback {
 		 * management problems as above. */
 		void onFatalTimeout(PeerContext source);
 	}
-	
-	private BlockReceiverTimeoutHandler nullTimeoutHandler = new BlockReceiverTimeoutHandler() {
 
-		@Override
-		public void onFirstTimeout() {
-			// Do nothing
-		}
-
-		@Override
-		public void onFatalTimeout(PeerContext source) {
-			// Do nothing
-		}
-		
-	};
-	
 	/*
 	 * RECEIPT_TIMEOUT must be less than 60 seconds because BlockTransmitter times out after not
 	 * hearing from us in 60 seconds. Without contact from the transmitter, we will try sending
 	 * at most MAX_CONSECUTIVE_MISSING_PACKET_REPORTS every RECEIPT_TIMEOUT to recover.
 	 */
-	public final int RECEIPT_TIMEOUT;
-	public static final int RECEIPT_TIMEOUT_REALTIME = 10000;
-	public static final int RECEIPT_TIMEOUT_BULK = 30000;
+	public final long RECEIPT_TIMEOUT;
+	public static final long RECEIPT_TIMEOUT_REALTIME = SECONDS.toMillis(10);
+	public static final long RECEIPT_TIMEOUT_BULK = SECONDS.toMillis(30);
 	// TODO: This should be proportional to the calculated round-trip-time, not a constant
-	public final int MAX_ROUND_TRIP_TIME;
+	public final long MAX_ROUND_TRIP_TIME;
 	public static final int MAX_CONSECUTIVE_MISSING_PACKET_REPORTS = 4;
 	public static final int MAX_SEND_INTERVAL = 500;
-	public static final int CLEANUP_TIMEOUT = 5000;
+	public static final long CLEANUP_TIMEOUT = SECONDS.toMillis(5);
 	// After 15 seconds, the receive is overdue and will cause backoff.
-	public static final int TOO_LONG_TIMEOUT = 15000;
+	public static final long TOO_LONG_TIMEOUT = SECONDS.toMillis(15);
 	/** sendAborted is not sent at the realtime/bulk priority. Most of the two
 	 * stage timeout stuff uses 60 seconds, it's a good number. */
-	public static final int ACK_TRANSFER_FAILED_TIMEOUT = 60*1000;
+	public static final long ACK_TRANSFER_FAILED_TIMEOUT = SECONDS.toMillis(60);
 	PartiallyReceivedBlock _prb;
 	PeerContext _sender;
 	long _uid;
@@ -175,6 +162,19 @@ public class BlockReceiver implements AsyncMessageFilterCallback {
 	 * end up reusing the slot before the handler has completed (=true).
 	 */
 	public BlockReceiver(MessageCore usm, PeerContext sender, long uid, PartiallyReceivedBlock prb, ByteCounter ctr, Ticker ticker, boolean doTooLong, boolean realTime, BlockReceiverTimeoutHandler timeoutHandler, boolean completeAfterAckedAllReceived) {
+		BlockReceiverTimeoutHandler nullTimeoutHandler = new BlockReceiverTimeoutHandler() {
+
+			@Override
+			public void onFirstTimeout() {
+				// Do nothing
+			}
+
+			@Override
+			public void onFatalTimeout(PeerContext source) {
+				// Do nothing
+			}
+
+		};
 		_timeoutHandler = timeoutHandler == null ? nullTimeoutHandler : timeoutHandler;
 		_sender = sender;
 		_prb = prb;
@@ -467,7 +467,7 @@ public class BlockReceiver implements AsyncMessageFilterCallback {
 	private long timeStartedWaiting = -1;
 	
 	private void waitNotification(boolean truncateTimeout) throws DisconnectedException {
-		int timeout;
+		long timeout;
 		long now = System.currentTimeMillis();
 		synchronized(this) {
 			if(truncateTimeout) {
@@ -480,7 +480,7 @@ public class BlockReceiver implements AsyncMessageFilterCallback {
 		_usm.addAsyncFilter(relevantMessages(timeout), notificationWaiter, _ctr);
 	}
 
-	private MessageFilter relevantMessages(int timeout) {
+	private MessageFilter relevantMessages(long timeout) {
 		MessageFilter mfPacketTransmit = MessageFilter.create().setTimeout(timeout).setType(DMT.packetTransmit).setField(DMT.UID, _uid).setSource(_sender);
 		MessageFilter mfAllSent = MessageFilter.create().setTimeout(timeout).setType(DMT.allSent).setField(DMT.UID, _uid).setSource(_sender);
 		MessageFilter mfSendAborted = MessageFilter.create().setTimeout(timeout).setType(DMT.sendAborted).setField(DMT.UID, _uid).setSource(_sender);

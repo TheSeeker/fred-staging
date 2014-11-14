@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project name="freenet" default="all" basedir=".">
+<project name="freenet" default="package" basedir=".">
 	<description>
 Freenet is free software that lets you publish and retrieve information without
 fear of censorship. To achieve this, the network is entirely decentralized, and
@@ -18,6 +18,7 @@ maintainers may prefer to use this instead of build.xml.
 	<!-- user overrides (properties are immutable, so set overrides first) -->
 	<property file="override.properties"/>
 	<property file="build.properties"/>
+	<property file="dependencies.properties"/>
 
 	<property name="version.src" value="freenet/node/Version.java" />
 	<property name="version.make" value="freenet/node/Version.class" />
@@ -33,9 +34,6 @@ maintainers may prefer to use this instead of build.xml.
 		<pathelement path="${test.make}"/>
 	</path>
 
-	<property name="contrib.version.min" value="-1"/>
-	<property name="contrib.version.rec" value="-1"/>
-
 	<property name="gjs.dst" value="${main.src}/freenet/clients/http/staticfiles/freenetjs"/>
 	<property name="gjs.dir" value="generator/js"/>
 	<path id="gjs.lib.path">
@@ -43,6 +41,18 @@ maintainers may prefer to use this instead of build.xml.
 		<pathelement location="${gjs.dir}/war/WEB-INF/classes"/>
 		<fileset dir="${lib.dir}" includes="${gjs.lib.jars}"/>
 	</path>
+
+	<path id="pmd.classpath">
+		<fileset dir="${pmd.dir}" erroronmissingdir="false" includes="lib/*.jar"/>
+	</path>
+
+	<property environment="env"/>
+	<property name="keystore" value="${env.jarsignerStoreLocation}"/>
+	<property name="keystore_alias" value="${env.jarsignerAlias}"/>
+	<property name="keystore_pass" value="${env.jarsignerStorePassword}"/>
+	<property name="key_pass" value="${env.jarsignerCodeSigningKeyPassword}"/>
+
+	<property name="jar.dst" value="${main.dst}/freenet.jar"/>
 
 	<assertions><enable/></assertions>
 
@@ -67,7 +77,14 @@ maintainers may prefer to use this instead of build.xml.
 
 	<target name="dist" depends="clean-all, all" description="clean-build everything"/>
 
-	<target name="all" depends="package, doc" description="build everything, incl. docs, GWT js"/>
+	<target name="sign" description="Sign the distribution" depends="package">
+		<echo message="Signing the distribution"/>
+		<signjar jar="${jar.dst}" strict="false" tsaurl="http://timestamp.comodoca.com/rfc3161" alias="${keystore_alias}" keystore="${keystore}" storepass="${keystore_pass}" keypass="${key_pass}" sigalg="SHA256withRSA" digestalg="SHA-256"/>
+		<!-- TODO: Should have strict="true", but it was introduced in Java 7, which we cannot yet require. -->
+		<verifyjar jar="${jar.dst}" alias="${keystore_alias}" keystore="${keystore}" storepass="${keystore_pass}" keypass="${key_pass}"/>
+	</target>
+
+	<target name="all" depends="package, doc, findbugs, pmd, cpd" description="build everything, incl. docs, GWT js"/>
 
 	<target name="clean-all" depends="clean, clean-doc, clean-gjs" description="clean all build products, incl. docs, GWT js"/>
 
@@ -83,6 +100,46 @@ maintainers may prefer to use this instead of build.xml.
 		<echo message="Misc parameters (-DPARAM=VALUE)"/>
 		<echo message="  javac.args  Command line arguments to pass to javac"/>
 		<echo message=""/>
+	</target>
+
+	<target name="findbugs" depends="package" unless="${findbugs.skip}">
+		<antcall target="libdep-findbugs"/>
+		<echo message="Running Findbugs"/>
+		<taskdef name="findbugs" classname="edu.umd.cs.findbugs.anttask.FindBugsTask" classpath="${findbugs.path}"/>
+
+		<findbugs home="${findbugs.dir}"
+		output="xml"
+		outputFile="${test.dst}/findbugs.xml"
+		warningsProperty="findbugs.module.warnings"
+		failOnError="true"
+		jvmargs="-Xmx1536m -XX:MaxPermSize=384m -XX:ReservedCodeCacheSize=128m" >
+		<auxClasspath refid="lib.path" />
+		<sourcePath path="${main.src}" />
+		<class location="${jar.dst}" />
+		</findbugs>
+	</target>
+
+	<target name="pmd" depends="package" unless="${pmd.skip}">
+		<antcall target="libdep-pmd"/>
+		<echo message="Running PMD"/>
+		<taskdef name="pmd" classname="net.sourceforge.pmd.ant.PMDTask" classpathref="pmd.classpath"/>
+		<pmd rulesetfiles="rulesets/java/design.xml" encoding="utf-8">
+			<formatter type="xml" toFile="${test.dst}/pmd.xml"/>
+			<fileset dir="${main.src}">
+				<include name="**/*.java"/>
+			</fileset>
+		</pmd>
+	</target>
+
+	<target name="cpd" depends="package" unless="${cpd.skip}">
+		<antcall target="libdep-cpd"/>
+		<echo message="Running CPD"/>
+		<taskdef name="cpd" classname="net.sourceforge.pmd.cpd.CPDTask" classpathref="pmd.classpath"/>
+		<cpd minimumTokenCount="100" format="xml" outputFile="${test.dst}/cpd.xml">
+			<fileset dir="${main.src}">
+				<include name="**/*.java"/>
+			</fileset>
+		</cpd>	
 	</target>
 
 	<target name="debug">
@@ -102,7 +159,11 @@ maintainers may prefer to use this instead of build.xml.
 
 	<target name="env">
 		<available property="lib.contrib.present" classname="freenet.node.ExtVersion" classpathref="lib.path"/>
-		<available property="lib.junit.present" classname="junit.framework.Test" classpathref="lib.path"/>
+		<available property="lib.bouncycastle.present" classname="org.bouncycastle.jce.provider.BouncyCastleProvider" classpathref="lib.path"/>
+		<available property="lib.junit.present" classname="junit.framework.Test" classpathref="libtest.path"/>
+		<available property="lib.findbugs.present" classname="edu.umd.cs.findbugs.anttask.FindBugsTask" classpath="${findbugs.path}"/>
+		<available property="lib.pmd.present" classname="net.sourceforge.pmd.ant.PMDTask" classpathref="pmd.classpath"/>
+		<available property="lib.cpd.present" classname="net.sourceforge.pmd.cpd.CPDTask" classpathref="pmd.classpath"/>
 		<available property="gjs.lib.gwt-user.present" classname="com.google.gwt.user.client.Window" classpathref="gjs.lib.path"/>
 		<available property="gjs.lib.gwt-dev.present" classname="com.google.gwt.dev.About" classpathref="gjs.lib.path"/>
 		<condition property="gjs.lib.gwt.present">
@@ -117,8 +178,24 @@ maintainers may prefer to use this instead of build.xml.
 		<fail message="freenet-ext not available"/>
 	</target>
 
+	<target name="libdep-bc" depends="env" unless="lib.bouncycastle.present">
+		<fail message="Please download the Bouncycastle crypto library from www.bouncycastle.org and put it in lib/bcprov.jar"/>
+	</target>
+
 	<target name="libdep-junit" depends="env" unless="lib.junit.present">
 		<fail message="JUnit not available"/>
+	</target>
+
+	<target name="libdep-findbugs" depends="env" unless="lib.findbugs.present">
+		<fail message="findbugs not available"/>
+	</target>
+
+	<target name="libdep-pmd" depends="env" unless="lib.pmd.present">
+		<fail message="PMD not available"/>
+	</target>
+
+	<target name="libdep-cpd" depends="env" unless="lib.cpd.present">
+		<fail message="CPD not available"/>
 	</target>
 
 	<target name="libdep-gwt-user" depends="env" unless="gjs.lib.gwt-user.present">
@@ -140,7 +217,7 @@ maintainers may prefer to use this instead of build.xml.
 		<mkdir dir="${test.dst}"/>
 	</target>
 
-	<target name="dep" depends="ensure-ext, ensure-gjs"/>
+	<target name="dep" depends="ensure-ext, ensure-bc, ensure-gjs"/>
 
 	<target name="check-version-file">
 		<uptodate property="version.uptodate"
@@ -162,7 +239,7 @@ maintainers may prefer to use this instead of build.xml.
 		<!-- Create the time stamp -->
 		<tstamp/>
 		<!-- Create the build directory structure used by compile -->
-		<javac srcdir="${main.src}" destdir="${main.make}" debug="on" optimize="on" source="1.6" target="1.6" encoding="UTF-8">
+		<javac srcdir="${main.src}" destdir="${main.make}" debug="on" source="1.6" target="1.6" includeAntRuntime="false" encoding="UTF-8">
 			<compilerarg line="${javac.args}"/>
 			<classpath refid="lib.path"/>
 			<!-- tell javac to find Version.java in ${main.make}, not ${main.src} -->
@@ -174,7 +251,7 @@ maintainers may prefer to use this instead of build.xml.
 		</javac>
 
 		<!-- Force compile of Version.java in case compile of ${main.src} didn't trigger it -->
-		<javac srcdir="${main.make}" destdir="${main.make}" debug="on" optimize="on" source="1.6" target="1.6" encoding="UTF-8">
+		<javac srcdir="${main.make}" destdir="${main.make}" debug="on" source="1.6" target="1.6" includeAntRuntime="false" encoding="UTF-8">
 			<compilerarg line="${javac.args}"/>
 			<classpath refid="lib.path"/>
 			<include name="${version.src}"/>
@@ -191,6 +268,8 @@ maintainers may prefer to use this instead of build.xml.
 				<include name="iso-*.tab"/>
 			</fileset>
 		</copy>
+		<!-- Copy the dependencies.properties file -->
+		<copy todir="${main.make}" file="dependencies.properties"/>
 	</target>
 
 	<target name="package-only" depends="build">
@@ -200,19 +279,21 @@ maintainers may prefer to use this instead of build.xml.
 			<map from="${lib.contrib.loc}/" to="${lib.contrib.dir.rel}/"/>
 			<map from="${lib.loc}/" to=""/>
 		</pathconvert>
-		<jar jarfile="${main.dst}/freenet.jar" basedir="${main.make}">
+		<jar jarfile="${jar.dst}" basedir="${main.make}">
 			<manifest>
+				<attribute name="Permissions" value="all-permissions"/>
+				<attribute name="Application-Name" value="Freenet REference Daemon"/>
+
 				<attribute name="Main-Class" value="freenet.node.Node"/>
-				<attribute name="Built-By" value="${user.name}"/>
-				<attribute name="Required-Ext-Version" value="${contrib.version.min}"/>
-				<attribute name="Recommended-Ext-Version" value="${contrib.version.rec}"/>
+				<attribute name="Required-Ext-Version" value="29"/>
+				<attribute name="Recommended-Ext-Version" value="29"/>
 				<attribute name="Class-Path" value="${lib.jars.package}" />
 				<section name="common">
 					<attribute name="Specification-Title" value="Freenet"/>
 					<attribute name="Specification-Version" value="0.7.5"/>
 					<attribute name="Specification-Vendor" value="freenetproject.org"/>
 					<attribute name="Implementation-Title" value="Freenet"/>
-					<attribute name="Implementation-Version" value="0.7.5 ${TODAY} ${git.revision}"/>
+					<attribute name="Implementation-Version" value="0.7.5 ${git.revision}"/>
 					<attribute name="Implementation-Vendor" value="freenetproject.org"/>
 				</section>
 			</manifest>
@@ -224,26 +305,30 @@ maintainers may prefer to use this instead of build.xml.
 
 	<target name="unit-build" depends="build" unless="${test.skip}">
 		<antcall target="libdep-junit"/>
-		<javac srcdir="${test.src}" destdir="${test.make}" debug="on" optimize="on" source="1.6" target="1.6" encoding="UTF-8">
+		<javac srcdir="${test.src}" destdir="${test.make}" debug="on" source="1.6" target="1.6" encoding="UTF-8">
 			<compilerarg line="${javac.args}"/>
 			<classpath refid="libtest.path"/>
 			<include name="**/*.java"/>
 			<exclude name="*.java"/>
 		</javac>
-		<copy todir="${test.make}/freenet/client/filter/png">
+		<copy todir="${test.make}/freenet/client/filter/png" overwrite="true">
 			<fileset dir="${test.src}/freenet/client/filter/png"/>
 		</copy>
-		<copy todir="${test.make}/freenet/client/filter/bmp">
+		<copy todir="${test.make}/freenet/client/filter/bmp" overwrite="true">
 			<fileset dir="${test.src}/freenet/client/filter/bmp"/>
+		</copy>
+		<copy todir="${test.make}/freenet/crypt/ciphers/rijndael-gladman-test-data" overwrite="true">
+			<fileset dir="${test.src}/freenet/crypt/ciphers/rijndael-gladman-test-data"/>
 		</copy>
 	</target>
 
 	<target name="unit" depends="unit-build" unless="${test.skip}">
-		<junit printsummary="yes" fork="yes" haltonfailure="yes" dir="${test.dst}">
+		<junit printsummary="yes" fork="yes" haltonfailure="${test.haltonfailure}" dir="${test.dst}">
 			<classpath refid="libtest.path"/>
 			<formatter type="plain" usefile="false"/>
-			<test if="test.class" name="${test.class}"/>
-			<batchtest unless="test.class" fork="yes">
+			<formatter type="xml" if="${test.xml_output}"/>
+			<test if="test.class" name="${test.class}" todir="${test.dst}"/>
+			<batchtest unless="test.class" fork="yes" todir="${test.dst}">
 				<fileset dir="${test.make}" includes="**/*Test.class"/>
 			</batchtest>
 			<sysproperty key="test.verbose" value="${test.verbose}"/>
@@ -266,6 +351,10 @@ maintainers may prefer to use this instead of build.xml.
 	<!-- =================================================================== -->
 
 	<target name="ensure-ext" depends="libdep-ext">
+		<!-- clean build does nothing, since this is external library. -->
+	</target>
+
+	<target name="ensure-bc" depends="libdep-bc">
 		<!-- clean build does nothing, since this is external library. -->
 	</target>
 
@@ -301,9 +390,7 @@ maintainers may prefer to use this instead of build.xml.
 
 	<target name="javadoc" depends="init-doc, dep" unless="${doc.skip}">
 		<javadoc classpathref="lib.path" sourcepath="${main.src}" destdir="${doc.api}" use="true">
-			<fileset dir="${main.src}" includes="**/*.java" />
-			<classpath refid="lib.path"/>
-			<link href="http://java.sun.com/j2se/1.6.0/docs/api"/>
+			<link href="http://docs.oracle.com/javase/6/docs/api/"/>
 		</javadoc>
 	</target>
 

@@ -18,7 +18,6 @@ import freenet.keys.SSKBlock;
 import freenet.keys.SSKVerifyException;
 import freenet.store.KeyCollisionException;
 import freenet.support.Logger;
-import freenet.support.OOMHandler;
 import freenet.support.ShortBuffer;
 import freenet.support.Logger.LogLevel;
 import freenet.support.io.NativeThread;
@@ -65,7 +64,6 @@ public class SSKInsertHandler implements PrioRunnable, ByteCounter {
         this.headers = headers;
         this.tag = tag;
         this.canWriteDatastore = canWriteDatastore;
-        if(htl <= 0) htl = 1;
         byte[] pubKeyHash = key.getPubKeyHash();
         pubKey = node.getPubKey.getKey(pubKeyHash, false, false, null);
         canCommit = false;
@@ -83,11 +81,9 @@ public class SSKInsertHandler implements PrioRunnable, ByteCounter {
     
     @Override
     public void run() {
-	    freenet.support.Logger.OSThread.logPID(this);
+        freenet.support.Logger.OSThread.logPID(this);
         try {
-        	realRun();
-		} catch (OutOfMemoryError e) {
-			OOMHandler.handleOOM(e);
+            realRun();
         } catch (Throwable t) {
             Logger.error(this, "Caught "+t, t);
         } finally {
@@ -105,6 +101,14 @@ public class SSKInsertHandler implements PrioRunnable, ByteCounter {
 		} catch (NotConnectedException e1) {
 			if(logMINOR) Logger.minor(this, "Lost connection to source");
 			return;
+		}
+		
+		if(tag.shouldSlowDown()) {
+			try {
+				source.sendAsync(DMT.createFNPRejectedOverload(uid, false, false, realTimeFlag), null, this);
+			} catch (NotConnectedException e) {
+				// Ignore.
+			}
 		}
 		
 		while(headers == null || data == null || pubKey == null) {
@@ -130,7 +134,7 @@ public class SSKInsertHandler implements PrioRunnable, ByteCounter {
 				return;
 			}
 			if(msg == null) {
-				Logger.normal(this, "Failed to receive all parts (data="+data+" headers="+headers+" pk="+pubKey+") for "+uid);
+				Logger.normal(this, "Failed to receive all parts (data="+(data==null?"null":"ok")+" headers="+(headers==null?"null":"ok")+" pk="+pubKey+") for "+uid);
 				Message failed = DMT.createFNPDataInsertRejected(uid, DMT.DATA_INSERT_REJECTED_RECEIVE_FAILED);
 				try {
 					source.sendSync(failed, this, realTimeFlag);
@@ -224,7 +228,6 @@ public class SSKInsertHandler implements PrioRunnable, ByteCounter {
         
         boolean receivedRejectedOverload = false;
         
-        long startTime = System.currentTimeMillis();
         while(true) {
             synchronized(sender) {
                 try {

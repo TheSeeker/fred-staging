@@ -111,14 +111,22 @@ public class PNGFilter implements ContentDataFilter {
 			// @see http://www.libpng.org/pub/png/spec/1.2/PNG-Chunks.html#C.Summary-of-standard-chunks
 			String lastChunkType = "";
 
-			while (dis.available() > 0 && !hasSeenIEND) {
+			while (!hasSeenIEND) {
 				boolean skip = false;
 				baos.reset();
 				String chunkTypeString = null;
 				// Length of the chunk
 				byte[] lengthBytes = new byte[4];
-				dis.readFully(lengthBytes);
-                                offset+=4;
+				try {
+					dis.readFully(lengthBytes);
+					offset+=4;
+				} catch (EOFException e) {
+					// FIXME optimise out the throw, don't use readFully?
+					// This will happen once per filtering.
+					// We can't use available() for reasons explained in
+					// the javadocs for ContentDataFilter.
+					break;
+				}
 
 				int length = ((lengthBytes[0] & 0xff) << 24) + ((lengthBytes[1] & 0xff) << 16)
 				        + ((lengthBytes[2] & 0xff) << 8) + (lengthBytes[3] & 0xff);
@@ -298,11 +306,11 @@ public class PNGFilter implements ContentDataFilter {
 				lastChunkType = chunkTypeString;
 			}
 
-			if (!(hasSeenIEND && hasSeenIHDR))
-				throwError("Missing IEND or IHDR!", "Missing IEND or IHDR!");
-                        
-			if (hasSeenIEND)
-				return; // Strip everything after IEND.
+			if (!hasSeenIEND)
+				throwError("Missing IEND", "Missing IEND");
+			if (!hasSeenIHDR)
+				throwError("Missing IHDR", "Missing IHDR");
+			return; // Strip everything after IEND.
 		} catch (ArrayIndexOutOfBoundsException e) {
 			throwError("ArrayIndexOutOfBoundsException while filtering", "ArrayIndexOutOfBoundsException while filtering");
 		} catch (NegativeArraySizeException e) {
@@ -328,8 +336,8 @@ public class PNGFilter implements ContentDataFilter {
 		final File fin = new File("/tmp/test.png");
 		final File fout = new File("/tmp/test2.png");
 		fout.delete();
-		final Bucket inputBucket = new FileBucket(fin, true, false, false, false, false);
-		final Bucket outputBucket = new FileBucket(fout, false, true, false, false, false);
+		final Bucket inputBucket = new FileBucket(fin, true, false, false, false);
+		final Bucket outputBucket = new FileBucket(fout, false, true, false, false);
 		InputStream inputStream = null;
 		OutputStream outputStream = null;
 		try {
@@ -339,9 +347,6 @@ public class PNGFilter implements ContentDataFilter {
 
 			ContentFilter.filter(inputStream, outputStream, "image/png",
 					new URI("http://127.0.0.1:8888/"), null, null, null);
-			inputStream.close();
-                        outputStream.flush();
-			outputStream.close();
 		} finally {
 			Closer.close(inputStream);
 			Closer.close(outputStream);

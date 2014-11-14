@@ -192,13 +192,15 @@ public class BookmarkItem extends Bookmark {
         return this.name + "###" + (this.desc != null ? this.desc : "") + "###" + this.hasAnActivelink + "###" + this.key.toString();
     }
 
-    public synchronized void setEdition(long ed, NodeClientCore node) {
+    /** @return True if we updated the edition */
+    public synchronized boolean setEdition(long ed, NodeClientCore node) {
         if (key.getSuggestedEdition() >= ed) {
         	if(logMINOR) Logger.minor(this, "Edition "+ed+" is too old, not updating "+key);
-            return;
+            return false;
         }
         key = key.setSuggestedEdition(ed);
         enableBookmark();
+        return true;
     }
 
     public USK getUSK() throws MalformedURLException {
@@ -252,20 +254,30 @@ public class BookmarkItem extends Bookmark {
         }
     }
 
+    public boolean hasUpdated() {
+        return updated;
+    }
+
+    public void clearUpdated() {
+        this.updated = false;
+    }
+
     public boolean hasAnActivelink() {
         return hasAnActivelink;
     }
     
     public String getDescription() {
-		if(desc.startsWith("L10N:"))
-			return NodeL10n.getBase().getString("Bookmarks.Defaults.Description."+desc.substring("L10N:".length()));
-        return (desc == null ? "" : desc);
+    	if(desc == null) return "";
+		if(desc.toLowerCase().startsWith("l10n:"))
+			return NodeL10n.getBase().getString("Bookmarks.Defaults.Description."+desc.substring("l10n:".length()));
+        return desc;
     }
     
     public String getShortDescription() {
-		if(shortDescription.startsWith("L10N:"))
-			return NodeL10n.getBase().getString("Bookmarks.Defaults.ShortDescription."+shortDescription.substring("L10N:".length()));
-        return (shortDescription == null ? "" : shortDescription);
+    	if(shortDescription == null) return "";
+		if(shortDescription.toLowerCase().startsWith("l10n:"))
+			return NodeL10n.getBase().getString("Bookmarks.Defaults.ShortDescription."+shortDescription.substring("l10n:".length()));
+        return shortDescription;
     }
     
     @Override

@@ -8,6 +8,7 @@ import java.util.NoSuchElementException;
 
 import javax.naming.SizeLimitExceededException;
 
+
 /** A parsed HTTP request (GET or POST). Request parameters are parameters
  * encoded into the URI, or part of a POST form which is encoded as 
  * application/x-www-form-urlencoded. Parts are parameters (including files)
@@ -127,7 +128,7 @@ public interface HTTPRequest {
 
 	/** Get a part as a Bucket. Parts can be very large, as they are POST
 	 * data from multipart/form-data and can include uploaded files. */
-	public Bucket getPart(String name);
+	public RandomAccessBucket getPart(String name);
 
 	/** Is a part set with the given name? */
 	public boolean isPartSet(String name);
@@ -192,5 +193,12 @@ public interface HTTPRequest {
 	 * @return The names of all parameters
 	 */
 	public Collection<String> getParameterNames();
+
+	/** Is the incognito=true boolean set? Sadly this does not prove that
+	 * it is actually running incognito mode... */
+	public boolean isIncognito();
+
+	/** Is the browser Chrome according to User-Agent? */
+	public boolean isChrome();
 
 }

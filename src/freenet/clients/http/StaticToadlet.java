@@ -60,7 +60,6 @@ public class StaticToadlet extends Toadlet {
 				return;
 			}
 			File parent = f.getParentFile();
-			String s = parent.toString();
 			// Basic sanity check.
 			// Prevents user from specifying root dir.
 			// They can still shoot themselves in the foot, but only when developing themes/using custom themes.
@@ -75,8 +74,8 @@ public class StaticToadlet extends Toadlet {
 				return;
 			}
 			try {
-				FileBucket fb = new FileBucket(from, true, false, false, false, false);
-				ctx.sendReplyHeaders(200, "OK", null, DefaultMIMETypes.guessMIMEType(path, false), fb.size(), new Date(System.currentTimeMillis() - 1000)); // Already expired, we want it to reload it.
+				FileBucket fb = new FileBucket(from, true, false, false, false);
+				ctx.sendReplyHeadersStatic(200, "OK", null, DefaultMIMETypes.guessMIMEType(path, false), fb.size(), new Date(System.currentTimeMillis() - 1000)); // Already expired, we want it to reload it.
 				ctx.writeData(fb);
 				return;
 			} catch (IOException e) {
@@ -93,19 +92,22 @@ public class StaticToadlet extends Toadlet {
 		}
 		Bucket data = ctx.getBucketFactory().makeBucket(strm.available());
 		OutputStream os = data.getOutputStream();
+		try {
 		byte[] cbuf = new byte[4096];
 		while(true) {
 			int r = strm.read(cbuf);
 			if(r == -1) break;
 			os.write(cbuf, 0, r);
 		}
-		strm.close();
-		os.close();
+		} finally {
+			strm.close();
+			os.close();
+		}
 		
 		URL url = getClass().getResource(ROOT_PATH+path);
 		Date mTime = getUrlMTime(url);
 		
-		ctx.sendReplyHeaders(200, "OK", null, DefaultMIMETypes.guessMIMEType(path, false), data.size(), mTime);
+		ctx.sendReplyHeadersStatic(200, "OK", null, DefaultMIMETypes.guessMIMEType(path, false), data.size(), mTime);
 
 		ctx.writeData(data);
 	}
@@ -134,6 +136,15 @@ public class StaticToadlet extends Toadlet {
 	@Override
 	public String path() {
 		return ROOT_URL;
+	}
+
+	/** Do we have a specific static file? Note that override files are not 
+	 * supported here as it is a static method.
+	 * @param The path to the file, relative to the staticfiles directory.
+	 */
+	public static boolean haveFile(String path) {
+		URL url = StaticToadlet.class.getResource(ROOT_PATH+path);
+		return url != null;
 	}
 
 }

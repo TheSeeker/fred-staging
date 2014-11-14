@@ -4,7 +4,6 @@
 
 package freenet.support.io;
 
-import freenet.node.NodeStarter;
 import freenet.support.LibraryLoader;
 import freenet.support.Logger;
 
@@ -66,7 +65,7 @@ public class NativeThread extends Thread {
 	static {
 		Logger.minor(NativeThread.class, "Running init()");
 		// Loading the NativeThread library isn't useful on macos
-		boolean maybeLoadNative = ("Linux".equalsIgnoreCase(System.getProperty("os.name"))) && (NodeStarter.extBuildNumber > 18);
+		boolean maybeLoadNative = ("Linux".equalsIgnoreCase(System.getProperty("os.name")));
 		Logger.debug(NativeThread.class, "Run init(): should loadNative="+maybeLoadNative);
 		if(maybeLoadNative && LibraryLoader.loadNative("/freenet/support/io/", "NativeThread")) {
 			NATIVE_PRIORITY_BASE = getLinuxPriority();
@@ -184,12 +183,12 @@ public class NativeThread extends Thread {
 	public static String normalizeName(String name) {
 		if(name.indexOf(" for ") != -1)
 			name = name.substring(0, name.indexOf(" for "));
-		if(name.indexOf("@") != -1)
-			name = name.substring(0, name.indexOf("@"));
-		if (name.indexOf("(") != -1)
-			name = name.substring(0, name.indexOf("("));
+		if(name.indexOf('@') != -1)
+			name = name.substring(0, name.indexOf('@'));
+		if (name.indexOf('(') != -1)
+			name = name.substring(0, name.indexOf('('));
 		
-		return name;
+		return name.trim();
 	}
 	
 	public String getNormalizedName() {

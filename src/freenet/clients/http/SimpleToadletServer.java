@@ -10,8 +10,10 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.Random;
 
 import org.tanukisoftware.wrapper.WrapperManager;
 
@@ -37,12 +39,12 @@ import freenet.node.PrioRunnable;
 import freenet.node.SecurityLevelListener;
 import freenet.node.SecurityLevels.NETWORK_THREAT_LEVEL;
 import freenet.node.SecurityLevels.PHYSICAL_THREAT_LEVEL;
+import freenet.node.useralerts.UserAlertManager;
 import freenet.pluginmanager.FredPluginL10n;
 import freenet.support.Executor;
 import freenet.support.HTMLNode;
 import freenet.support.LogThresholdCallback;
 import freenet.support.Logger;
-import freenet.support.OOMHandler;
 import freenet.support.Ticker;
 import freenet.support.Logger.LogLevel;
 import freenet.support.api.BooleanCallback;
@@ -85,6 +87,7 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 	// ACL
 	private final AllowedHosts allowedFullAccess;
 	private boolean publicGatewayMode;
+	private final boolean wasPublicGatewayMode;
 	
 	// Theme 
 	private THEME cssTheme;
@@ -96,8 +99,9 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 	// Control
 	private Thread myThread;
 	private final Executor executor;
+	private final Random random;
 	private BucketFactory bf;
-	private NodeClientCore core;
+	private volatile NodeClientCore core;
 	
 	// HTTP Option
 	private boolean doRobots;
@@ -158,33 +162,43 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 		}
 	}
 	
-	private static class FProxyPassthruMaxSize extends LongCallback {
+	private static class FProxyPassthruMaxSizeNoProgress extends LongCallback {
 		@Override
 		public Long get() {
-			return FProxyToadlet.MAX_LENGTH;
+			return FProxyToadlet.MAX_LENGTH_NO_PROGRESS;
 		}
 		
 		@Override
 		public void set(Long val) throws InvalidConfigValueException {
 			if (get().equals(val))
 				return;
-			FProxyToadlet.MAX_LENGTH = val;
+			FProxyToadlet.MAX_LENGTH_NO_PROGRESS = val;
+		}
+	}
+
+	private static class FProxyPassthruMaxSizeProgress extends LongCallback {
+		@Override
+		public Long get() {
+			return FProxyToadlet.MAX_LENGTH_WITH_PROGRESS;
+		}
+		
+		@Override
+		public void set(Long val) throws InvalidConfigValueException {
+			if (get().equals(val))
+				return;
+			FProxyToadlet.MAX_LENGTH_WITH_PROGRESS = val;
 		}
 	}
 
 	private class FProxyPortCallback extends IntCallback  {
-		private Integer savedPort;
 		@Override
 		public Integer get() {
-			if (savedPort == null)
-				savedPort = port;
-			return savedPort;
+			return port;
 		}
 		
 		@Override
 		public void set(Integer newPort) throws NodeNeedRestartException {
-			if(savedPort != newPort) {
-				savedPort = port;
+			if(port != newPort) {
 				throw new NodeNeedRestartException("Port cannot change on the fly");
 			}
 		}
@@ -198,15 +212,17 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 		
 		@Override
 		public void set(String bindTo) throws InvalidConfigValueException {
-			if(!bindTo.equals(get())) {
-				try {
-					networkInterface.setBindTo(bindTo, false);
+			String oldValue = get();
+			if(!bindTo.equals(oldValue)) {
+				String[] failedAddresses = networkInterface.setBindTo(bindTo, false);
+				if(failedAddresses == null) {
 					SimpleToadletServer.this.bindTo = bindTo;
-				} catch (IOException e) {
+				} else {
 					// This is an advanced option for reasons of reducing clutter,
 					// but it is expected to be used by regular users, not devs.
 					// So we translate the error messages.
-					throw new InvalidConfigValueException(l10n("couldNotChangeBindTo", "error", e.getLocalizedMessage()));
+					networkInterface.setBindTo(oldValue, false);
+					throw new InvalidConfigValueException(l10n("couldNotChangeBindTo", "failedInterfaces", Arrays.toString(failedAddresses)));
 				}
 			}
 		}
@@ -218,9 +234,13 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 		}
 		
 		@Override
-		public void set(String allowedHosts) {
+		public void set(String allowedHosts) throws InvalidConfigValueException {
 			if (!allowedHosts.equals(get())) {
+				try {
 				networkInterface.setAllowedHosts(allowedHosts);
+				} catch(IllegalArgumentException e) {
+					throw new InvalidConfigValueException(e);
+				}
 			}
 		}
 	}
@@ -236,6 +256,7 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 				throw new InvalidConfigValueException(l10n("illegalCSSName"));
 			cssTheme = THEME.themeFromName(CSSName);
 			pageMaker.setTheme(cssTheme);
+			NodeClientCore core = SimpleToadletServer.this.core;
 			if (core.node.pluginManager != null)
 				core.node.pluginManager.setFProxyTheme(cssTheme);
 		}
@@ -253,6 +274,7 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 
 		@Override
 		public void set(String val) throws InvalidConfigValueException {
+			NodeClientCore core = SimpleToadletServer.this.core;
 			if(core == null) return;
 			if(val.equals(get()) || val.equals(""))
 				cssOverride = null;
@@ -263,14 +285,13 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 				else if(!tmp.canRead() || !tmp.isFile())
 					throw new InvalidConfigValueException(l10n("cssOverrideCantRead", "filename", tmp.toString()));
 				File parent = tmp.getParentFile();
-				String s = parent.toString();
 				// Basic sanity check.
 				// Prevents user from specifying root dir.
 				// They can still shoot themselves in the foot, but only when developing themes/using custom themes.
 				// Because of the .. check above, any malicious thing cannot break out of the dir anyway.
 				if(parent.getParentFile() == null)
 					throw new InvalidConfigValueException(l10n("cssOverrideCantUseRootDir", "filename", parent.toString()));
-				cssOverride = tmp.getAbsoluteFile();
+				cssOverride = tmp;
 			}
 			if(cssOverride == null)
 				pageMaker.setOverride(null);
@@ -395,10 +416,10 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 		}
 		
 	};
-	
-	private final ReFilterCallback refilterPolicyCallback = new ReFilterCallback();
-	
+
 	public void createFproxy() {
+		NodeClientCore core = this.core;
+		Node node = core.node;
 		synchronized(this) {
 			if(haveCalledFProxy) return;
 			haveCalledFProxy = true;
@@ -406,9 +427,9 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 		
 		pushDataManager=new PushDataManager(getTicker());
 		intervalPushManager=new IntervalPusherManager(getTicker(), pushDataManager);
-		bookmarkManager = new BookmarkManager(core);
+		bookmarkManager = new BookmarkManager(core, publicGatewayMode());
 		try {
-			FProxyToadlet.maybeCreateFProxyEtc(core, core.node, core.node.config, this, bookmarkManager);
+			FProxyToadlet.maybeCreateFProxyEtc(core, node, node.config, this);
 		} catch (IOException e) {
 			Logger.error(this, "Could not start fproxy: "+e, e);
 			System.err.println("Could not start fproxy:");
@@ -418,7 +439,7 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 	
 
 	
-	public synchronized void setCore(NodeClientCore core) {
+	public void setCore(NodeClientCore core) {
 		this.core = core;
 	}
 	
@@ -429,7 +450,8 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 	public SimpleToadletServer(SubConfig fproxyConfig, BucketFactory bucketFactory, Executor executor, Node node) throws IOException, InvalidConfigValueException {
 
 		this.executor = executor;
-		this.core = node.clientCore;
+		this.core = null; // setCore() will be called later. 
+		this.random = new Random();
 		
 		int configItemOrder = 0;
 		
@@ -552,11 +574,13 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 
 			@Override
 			public void set(Boolean val) throws InvalidConfigValueException, NodeNeedRestartException {
+				if(publicGatewayMode == val) return;
 				publicGatewayMode = val;
+				throw new NodeNeedRestartException(l10n("publicGatewayModeNeedsRestart"));
 			}
 			
 		});
-		publicGatewayMode = fproxyConfig.getBoolean("publicGatewayMode");
+		wasPublicGatewayMode = publicGatewayMode = fproxyConfig.getBoolean("publicGatewayMode");
 		
 		// This is OFF BY DEFAULT because for example firefox has a limit of 2 persistent 
 		// connections per server, but 8 non-persistent connections per server. We need 8 conns
@@ -622,8 +646,11 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 		});
 		enableActivelinks = fproxyConfig.getBoolean("enableActivelinks");
 		
-		fproxyConfig.register("passthroughMaxSize", (2L*1024*1024*11)/10, configItemOrder++, true, false, "SimpleToadletServer.passthroughMaxSize", "SimpleToadletServer.passthroughMaxSizeLong", new FProxyPassthruMaxSize(), true);
-		FProxyToadlet.MAX_LENGTH = fproxyConfig.getLong("passthroughMaxSize");
+		fproxyConfig.register("passthroughMaxSize", FProxyToadlet.MAX_LENGTH_NO_PROGRESS, configItemOrder++, true, false, "SimpleToadletServer.passthroughMaxSize", "SimpleToadletServer.passthroughMaxSizeLong", new FProxyPassthruMaxSizeNoProgress(), true);
+		FProxyToadlet.MAX_LENGTH_NO_PROGRESS = fproxyConfig.getLong("passthroughMaxSize");
+		fproxyConfig.register("passthroughMaxSizeProgress", FProxyToadlet.MAX_LENGTH_WITH_PROGRESS, configItemOrder++, true, false, "SimpleToadletServer.passthroughMaxSizeProgress", "SimpleToadletServer.passthroughMaxSizeProgressLong", new FProxyPassthruMaxSizeProgress(), true);
+		FProxyToadlet.MAX_LENGTH_WITH_PROGRESS = fproxyConfig.getLong("passthroughMaxSizeProgress");
+		System.out.println("Set fproxy max length to "+FProxyToadlet.MAX_LENGTH_NO_PROGRESS+" and max length with progress to "+FProxyToadlet.MAX_LENGTH_WITH_PROGRESS+" = "+fproxyConfig.getLong("passthroughMaxSizeProgress"));
 		
 		fproxyConfig.register("allowedHosts", "127.0.0.1,0:0:0:0:0:0:0:1", configItemOrder++, true, true, "SimpleToadletServer.allowedHosts", "SimpleToadletServer.allowedHostsLong",
 				new FProxyAllowedHostsCallback());
@@ -638,7 +665,11 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 
 					@Override
 					public void set(String val) throws InvalidConfigValueException {
+						try {
 						allowedFullAccess.setAllowedHosts(val);
+						} catch(IllegalArgumentException e) {
+							throw new InvalidConfigValueException(e);
+						}
 					}
 			
 		});
@@ -713,9 +744,9 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 					}
 		}, false);
 		HTMLFilter.metaRefreshRedirectMinInterval = Math.max(-1, fproxyConfig.getInt("metaRefreshRedirectInterval"));
-		
-		fproxyConfig.register("refilterPolicy", "RE_FILTER", 
-				configItemOrder++, true, false, "SimpleToadletServer.refilterPolicy", "SimpleToadletServer.refilterPolicyLong", refilterPolicyCallback);
+
+		fproxyConfig.register("refilterPolicy", "RE_FILTER",
+				configItemOrder++, true, false, "SimpleToadletServer.refilterPolicy", "SimpleToadletServer.refilterPolicyLong", new ReFilterCallback());
 		
 		this.refilterPolicy = REFILTER_POLICY.valueOf(fproxyConfig.getString("refilterPolicy"));
 		
@@ -772,10 +803,13 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 	public StartupToadlet startupToadlet;
 	
 	public void removeStartupToadlet() {
-		unregister(startupToadlet);
-		// Ready to be GCed
-		startupToadlet = null;
-		// Not in the navbar.
+		// setCore() must have been called first. It is in fact called much earlier on.
+		synchronized(this) {
+			unregister(startupToadlet);
+			// Ready to be GCed
+			startupToadlet = null;
+			// Not in the navbar.
+		}
 	}
 	
 	private void maybeGetNetworkInterface() throws IOException {
@@ -794,7 +828,7 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 	
 	@Override
 	public boolean publicGatewayMode() {
-		return publicGatewayMode;
+		return wasPublicGatewayMode;
 	}
 	
 	public void start() {
@@ -855,9 +889,11 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 	@Override
 	public void register(Toadlet t, String menu, String urlPrefix, boolean atFront, String name, String title, boolean fullOnly, LinkEnabledCallback cb, FredPluginL10n l10n) {
 		ToadletElement te = new ToadletElement(t, urlPrefix, menu, name);
-		if(atFront) toadlets.addFirst(te);
-		else toadlets.addLast(te);
-		t.container = this;
+		synchronized(toadlets) {
+			if(atFront) toadlets.addFirst(te);
+			else toadlets.addLast(te);
+			t.container = this;
+		}
 		if (menu != null && name != null) {
 			pageMaker.addNavigationLink(menu, urlPrefix, name, title, fullOnly, cb, l10n);
 		}
@@ -868,15 +904,20 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 	}
 
 	@Override
-	public synchronized void unregister(Toadlet t) {
-		for(Iterator<ToadletElement> i=toadlets.iterator();i.hasNext();) {
-			ToadletElement e = i.next();
-			if(e.t == t) {
-				i.remove();
-				if(e.menu != null && e.name != null) {
-					pageMaker.removeNavigationLink(e.menu, e.name);
+	public void unregister(Toadlet t) {
+		ToadletElement e = null;
+		synchronized(toadlets) {
+			for(Iterator<ToadletElement> i=toadlets.iterator();i.hasNext();) {
+				e = i.next();
+				if(e.t == t) {
+					i.remove();
+					break;
 				}
-				return;
+			}
+		}
+		if(e != null && e.t == t) {
+			if(e.menu != null && e.name != null) {
+				pageMaker.removeNavigationLink(e.menu, e.name);
 			}
 		}
 	}
@@ -895,6 +936,7 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 		String path = uri.getPath();
 
 		// Show the wizard until dismissed by the user (See bug #2624)
+		NodeClientCore core = this.core;
 		if(core != null && core.node != null && !fproxyHasCompletedWizard) {
 			//If the user has not completed the wizard, only allow access to the wizard and static
 			//resources. Anything else redirects to the first page of the wizard.
@@ -908,21 +950,20 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 			}
 		}
 
-		Iterator<ToadletElement> i = toadlets.iterator();
-		while(i.hasNext()) {
-			ToadletElement te = i.next();
-						
-			if(path.startsWith(te.prefix))
+		synchronized(toadlets) {
+			for(ToadletElement te: toadlets) {
+				if(path.startsWith(te.prefix))
 					return te.t;
-			if(te.prefix.length() > 0 && te.prefix.charAt(te.prefix.length()-1) == '/') {
-				if(path.equals(te.prefix.substring(0, te.prefix.length()-1))) {
-					URI newURI;
-					try {
-						newURI = new URI(te.prefix);
-					} catch (URISyntaxException e) {
-						throw new Error(e);
+				if(te.prefix.length() > 0 && te.prefix.charAt(te.prefix.length()-1) == '/') {
+					if(path.equals(te.prefix.substring(0, te.prefix.length()-1))) {
+						URI newURI;
+						try {
+							newURI = new URI(te.prefix);
+						} catch (URISyntaxException e) {
+							throw new Error(e);
+						}
+						throw new PermanentRedirectException(newURI);
 					}
-					throw new PermanentRedirectException(newURI);
 				}
 			}
 		}
@@ -987,11 +1028,7 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 		    freenet.support.Logger.OSThread.logPID(this);
 			if(logMINOR) Logger.minor(this, "Handling connection");
 			try {
-				ToadletContextImpl.handle(sock, SimpleToadletServer.this, pageMaker);
-			} catch (OutOfMemoryError e) {
-				OOMHandler.handleOOM(e);
-				System.err.println("SimpleToadletServer request above failed.");
-				Logger.error(this, "OOM in SocketHandler");
+				ToadletContextImpl.handle(sock, SimpleToadletServer.this, pageMaker, getUserAlertManager(), bookmarkManager);
 			} catch (Throwable t) {
 				System.err.println("Caught in SimpleToadletServer: "+t);
 				t.printStackTrace();
@@ -1015,6 +1052,12 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 	@Override
 	public THEME getTheme() {
 		return this.cssTheme;
+	}
+
+	public UserAlertManager getUserAlertManager() {
+		NodeClientCore core = this.core;
+		if(core == null) return null;
+		return core.alerts;
 	}
 
 	public void setCSSName(THEME theme) {
@@ -1198,6 +1241,11 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 		return sb.toString();
 	}
 
+	@Override
+	public boolean isSSL() {
+		return ssl;
+	}
+
 	//
 	// LINKFILTEREXCEPTIONPROVIDER METHODS
 	//
@@ -1217,6 +1265,14 @@ public final class SimpleToadletServer implements ToadletContainer, Runnable, Li
 			return ((LinkFilterExceptedToadlet) toadlet).isLinkExcepted(link);
 		}
 		return false;
+	}
+
+
+
+	@Override
+	public long generateUniqueID() {
+		// FIXME increment a counter?
+		return random.nextLong();
 	}
 
 }

@@ -3,8 +3,6 @@
  * http://www.gnu.org/ for further details of the GPL. */
 package freenet.clients.http;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -21,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.StringTokenizer;
+import java.util.Map.Entry;
 
 import javax.naming.SizeLimitExceededException;
 
@@ -29,11 +28,13 @@ import freenet.support.LogThresholdCallback;
 import freenet.support.Logger;
 import freenet.support.MultiValueTable;
 import freenet.support.SimpleReadOnlyArrayBucket;
+import freenet.support.URLEncoder;
 import freenet.support.Logger.LogLevel;
 import freenet.support.api.Bucket;
 import freenet.support.api.BucketFactory;
 import freenet.support.api.HTTPRequest;
 import freenet.support.api.HTTPUploadedFile;
+import freenet.support.api.RandomAccessBucket;
 import freenet.support.io.BucketTools;
 import freenet.support.io.Closer;
 import freenet.support.io.LineReadingInputStream;
@@ -73,7 +74,9 @@ public class HTTPRequestImpl implements HTTPRequest {
 	/**
 	 * A hashmap of buckets that we use to store all the parts for a multipart/form-data request
 	 */
-	private HashMap<String, Bucket> parts;
+	private HashMap<String, RandomAccessBucket> parts;
+	
+	private boolean freedParts;
 	
 	/** A map for uploaded files. */
 	private Map<String, HTTPUploadedFileImpl> uploadedFiles = new HashMap<String, HTTPUploadedFileImpl>();
@@ -142,7 +145,7 @@ public class HTTPRequestImpl implements HTTPRequest {
 		this.headers = ctx.getHeaders();
 		this.parseRequestParameters(uri.getRawQuery(), true, false);
 		this.data = d;
-		this.parts = new HashMap<String, Bucket>();
+		this.parts = new HashMap<String, RandomAccessBucket>();
 		this.bucketfactory = ctx.getBucketFactory();
 		this.method = method;
 		if(data != null) {
@@ -195,71 +198,27 @@ public class HTTPRequestImpl implements HTTPRequest {
 	private void parseRequestParameters(String queryString, boolean doUrlDecoding, boolean asParts) {
 
 		if(logMINOR) Logger.minor(this, "queryString is "+queryString+", doUrlDecoding="+doUrlDecoding);
-		
-		// nothing to do if there was no query string in the URI
-		if ((queryString == null) || (queryString.length() == 0)) {
-			return;
-		}
 
-		// iterate over all tokens in the query string (separated by &)
-		StringTokenizer tokenizer = new StringTokenizer(queryString, "&");
-		while (tokenizer.hasMoreTokens()) {
-			String nameValueToken = tokenizer.nextToken();
-			
-			if(logMINOR) Logger.minor(this, "Token: "+nameValueToken);
+		Map<String, List<String>> parameters = parseUriParameters(queryString, doUrlDecoding);
 
-			// a token can be either a name, or a name value pair...
-			String name = null;
-			String value = "";
-			int indexOfEqualsChar = nameValueToken.indexOf('=');
-			if (indexOfEqualsChar < 0) {
-				// ...it's only a name, so the value stays emptys
-				name = nameValueToken;
-				if(logMINOR) Logger.minor(this, "Name: "+name);
-			} else if (indexOfEqualsChar == nameValueToken.length() - 1) {
-				// ...it's a name with an empty value, so remove the '='
-				// character
-				name = nameValueToken.substring(0, indexOfEqualsChar);
-				if(logMINOR) Logger.minor(this, "Name: "+name);
-			} else {
-				// ...it's a name value pair, split into name and value
-				name = nameValueToken.substring(0, indexOfEqualsChar);
-				value = nameValueToken.substring(indexOfEqualsChar + 1);
-				if(logMINOR) Logger.minor(this, "Name: "+name+" Value: "+value);
-			}
-
-			// url-decode the name and value
-			if (doUrlDecoding) {
-					try {
-						name = URLDecoder.decode(name, "UTF-8");
-						value = URLDecoder.decode(value, "UTF-8");
-					} catch (UnsupportedEncodingException e) {
-						throw new Error("Impossible: JVM doesn't support UTF-8: " + e, e);
-					}
-				if(logMINOR) {
-					Logger.minor(this, "Decoded name: "+name);
-					Logger.minor(this, "Decoded value: "+value);
-				}
-			}
-			
-			if(asParts) {
-				// Store as a part
+		if (asParts) {
+			for (Entry<String, List<String>> parameterValues : parameters.entrySet()) {
+				List<String> values = parameterValues.getValue();
+				String value = values.get(values.size() - 1);
 				byte[] buf;
 				try {
 					buf = value.getBytes("UTF-8");
 				} catch (UnsupportedEncodingException e) {
 					throw new Error("Impossible: JVM doesn't support UTF-8: " + e, e);
 				} // FIXME some other encoding?
-				Bucket b = new SimpleReadOnlyArrayBucket(buf);
-				parts.put(name, b);
+				RandomAccessBucket b = new SimpleReadOnlyArrayBucket(buf);
+				parts.put(parameterValues.getKey(), b);
 				if(logMINOR)
-					Logger.minor(this, "Added as part: name="+name+" value="+value);
-			} else {
-				// get the list of values for this parameter that were parsed so far
-				List<String> valueList = this.getParameterValueList(name);
-				// add this value to the list
-				valueList.add(value);
+					Logger.minor(this, "Added as part: name="+parameterValues.getKey()+" value="+value);
 			}
+		} else {
+			parameterNameValuesMap.clear();
+			parameterNameValuesMap.putAll(parameters);
 		}
 	}
 
@@ -299,6 +258,104 @@ public class HTTPRequestImpl implements HTTPRequest {
 			this.parameterNameValuesMap.put(name, values);
 		}
 		return values;
+	}
+
+	/**
+	 * Parses the parameters from the given query string, optionally decoding
+	 * the parameters using UTF-8.
+	 *
+	 * @param queryString
+	 *            The query string to decode
+	 * @param doUrlDecoding
+	 *            {@code true} to decode the parameter names and values
+	 * @return The decoded parameters
+	 */
+	public static Map<String, List<String>> parseUriParameters(String queryString, boolean doUrlDecoding) {
+		if(logMINOR) Logger.minor(HTTPRequestImpl.class, "queryString is "+queryString+", doUrlDecoding="+doUrlDecoding);
+
+		/* create result map. */
+		Map<String, List<String>> parameters = new HashMap<String, List<String>>();
+
+		// nothing to do if there was no query string in the URI
+		if ((queryString == null) || (queryString.length() == 0)) {
+			return parameters;
+		}
+
+		// iterate over all tokens in the query string (separated by &)
+		StringTokenizer tokenizer = new StringTokenizer(queryString, "&");
+		while (tokenizer.hasMoreTokens()) {
+			String nameValueToken = tokenizer.nextToken();
+
+			if(logMINOR) Logger.minor(HTTPRequestImpl.class, "Token: "+nameValueToken);
+
+			// a token can be either a name, or a name value pair...
+			String name = null;
+			String value = "";
+			int indexOfEqualsChar = nameValueToken.indexOf('=');
+			if (indexOfEqualsChar < 0) {
+				// ...it's only a name, so the value stays emptys
+				name = nameValueToken;
+				if(logMINOR) Logger.minor(HTTPRequestImpl.class, "Name: "+name);
+			} else if (indexOfEqualsChar == nameValueToken.length() - 1) {
+				// ...it's a name with an empty value, so remove the '='
+				// character
+				name = nameValueToken.substring(0, indexOfEqualsChar);
+				if(logMINOR) Logger.minor(HTTPRequestImpl.class, "Name: "+name);
+			} else {
+				// ...it's a name value pair, split into name and value
+				name = nameValueToken.substring(0, indexOfEqualsChar);
+				value = nameValueToken.substring(indexOfEqualsChar + 1);
+				if(logMINOR) Logger.minor(HTTPRequestImpl.class, "Name: "+name+" Value: "+value);
+			}
+
+			// url-decode the name and value
+			if (doUrlDecoding) {
+					try {
+						name = URLDecoder.decode(name, "UTF-8");
+						value = URLDecoder.decode(value, "UTF-8");
+					} catch (UnsupportedEncodingException e) {
+						throw new Error("Impossible: JVM doesn't support UTF-8: " + e, e);
+					}
+				if(logMINOR) {
+					Logger.minor(HTTPRequestImpl.class, "Decoded name: "+name);
+					Logger.minor(HTTPRequestImpl.class, "Decoded value: "+value);
+				}
+			}
+
+			List<String> values = parameters.get(name);
+			if (values == null) {
+				values = new ArrayList<String>();
+				parameters.put(name, values);
+			}
+			values.add(value);
+		}
+
+		return parameters;
+	}
+
+	/**
+	 * Creates a query string from the given parameters.
+	 *
+	 * @param parameterValues
+	 *            The parameters to create a query string from
+	 * @param doUrlEncoding
+	 *            {@code true} if encoding for HTTP headers, {@code false} to
+	 *            only encode unsafe characters
+	 * @return The query string
+	 */
+	public static String createQueryString(Map<String, List<String>> parameterValues, boolean doUrlEncoding) {
+		StringBuilder queryString = new StringBuilder();
+		for (Entry<String, List<String>> parameter : parameterValues.entrySet()) {
+			for (String value : parameter.getValue()) {
+				if (queryString.length() > 0) {
+					queryString.append('&');
+				}
+				queryString.append(URLEncoder.encode(parameter.getKey(), doUrlEncoding));
+				queryString.append('=');
+				queryString.append(URLEncoder.encode(value, doUrlEncoding));
+			}
+		}
+		return queryString.toString();
 	}
 
 	/* (non-Javadoc)
@@ -418,10 +475,8 @@ public class HTTPRequestImpl implements HTTPRequest {
 	 */
 	private void parseMultiPartData() throws IOException {
 		InputStream is = null;
-		BufferedInputStream bis = null;
 		LineReadingInputStream lis = null;
 		OutputStream bucketos = null;
-		OutputStream bbos = null;
 
 		try {
 			if(data == null)
@@ -444,8 +499,8 @@ public class HTTPRequestImpl implements HTTPRequest {
 				return;
 
 			String boundary = null;
-			for(int i = 0; i < ctypeparts.length; i++) {
-				String[] subparts = ctypeparts[i].split("=");
+			for(String ctypepart: ctypeparts) {
+				String[] subparts = ctypepart.split("=");
 				if((subparts.length == 2) && subparts[0].trim().equalsIgnoreCase("boundary"))
 					boundary = subparts[1];
 			}
@@ -463,23 +518,22 @@ public class HTTPRequestImpl implements HTTPRequest {
 				Logger.minor(this, "Boundary is: " + boundary);
 
 			is = this.data.getInputStream();
-			bis = new BufferedInputStream(is, 32768);
-			lis = new LineReadingInputStream(bis);
+			lis = new LineReadingInputStream(is);
 
 			String line;
 			line = lis.readLine(100, 100, false); // really it's US-ASCII, but ISO-8859-1 is close enough.
-			while((bis.available() > 0) && !line.equals(boundary)) {
+			while((is.available() > 0) && !line.equals(boundary)) {
 				line = lis.readLine(100, 100, false);
 			}
 
 			boundary = "\r\n" + boundary;
 
-			Bucket filedata = null;
+			RandomAccessBucket filedata = null;
 			String name = null;
 			String filename = null;
 			String contentType = null;
 
-			while(bis.available() > 0) {
+			while(is.available() > 0) {
 				name = null;
 				filename = null;
 				contentType = null;
@@ -529,34 +583,33 @@ public class HTTPRequestImpl implements HTTPRequest {
 			// boundary string
 
 				// we can only give an upper bound for the size of the bucket
-				filedata = this.bucketfactory.makeBucket(bis.available());
+				filedata = this.bucketfactory.makeBucket(is.available());
 				bucketos = filedata.getOutputStream();
-				bbos = new BufferedOutputStream(bucketos, 32768);
 				// buffer characters that match the boundary so far
 			// FIXME use whatever charset was used
 				byte[] bbound = boundary.getBytes("UTF-8"); // ISO-8859-1? boundary should be in US-ASCII
 				int offset = 0;
-				while((bis.available() > 0) && (offset < bbound.length)) {
-					byte b = (byte) bis.read();
+				while((is.available() > 0) && (offset < bbound.length)) {
+					byte b = (byte) is.read();
 
 					if(b == bbound[offset])
 						offset++;
 					else if((b != bbound[offset]) && (offset > 0)) {
 						// offset bytes matched, but no more
 					// write the bytes that matched, then the non-matching byte
-						bbos.write(bbound, 0, offset);
+						bucketos.write(bbound, 0, offset);
 						offset = 0;
 						if(b == bbound[0])
 							offset = 1;
 						else
-							bbos.write(b);
+							bucketos.write(b);
 					}
 					else
-						bbos.write(b);
+						bucketos.write(b);
 				}
 
-				bbos.flush();
-				bbos.close();
+				bucketos.close();
+				bucketos = null;
 			
 				parts.put(name, filedata);
 				if(logMINOR)
@@ -566,10 +619,9 @@ public class HTTPRequestImpl implements HTTPRequest {
 			}
 		}
 		finally {
-			Closer.close(bbos);
 			Closer.close(bucketos);
 			Closer.close(lis);
-			Closer.close(bis);
+			Closer.close(is);
 			Closer.close(is);
 		}
 	}
@@ -586,7 +638,8 @@ public class HTTPRequestImpl implements HTTPRequest {
 	 * @see freenet.clients.http.HTTPRequest#getPart(java.lang.String)
 	 */
 	@Override
-	public Bucket getPart(String name) {
+	public RandomAccessBucket getPart(String name) {
+		if(freedParts) throw new IllegalStateException("Already freed");
 		return this.parts.get(name);
 	}
 	
@@ -595,6 +648,7 @@ public class HTTPRequestImpl implements HTTPRequest {
 	 */
 	@Override
 	public boolean isPartSet(String name) {
+		if(freedParts) throw new IllegalStateException("Already freed");
 		if(parts == null)
 			return false;
 
@@ -613,6 +667,7 @@ public class HTTPRequestImpl implements HTTPRequest {
 	
 	@Override
 	public String getPartAsStringThrowing(String name, int maxLength) throws NoSuchElementException, SizeLimitExceededException {
+		if(freedParts) throw new IllegalStateException("Already freed");
 		Bucket part = this.parts.get(name);
 		
 		if(part == null)
@@ -626,6 +681,7 @@ public class HTTPRequestImpl implements HTTPRequest {
 	
 	@Override
 	public String getPartAsStringFailsafe(String name, int maxLength) {
+		if(freedParts) throw new IllegalStateException("Already freed");
 		Bucket part = this.parts.get(name);
 		return part == null ? "" : getPartAsLimitedString(part, maxLength);
 	}
@@ -644,6 +700,7 @@ public class HTTPRequestImpl implements HTTPRequest {
 	@Override
 	@Deprecated
 	public byte[] getPartAsBytes(String name, int maxlength) {
+		if(freedParts) throw new IllegalStateException("Already freed");
 		Bucket part = this.parts.get(name);
 		if(part == null) return new byte[0];
 		
@@ -654,7 +711,7 @@ public class HTTPRequestImpl implements HTTPRequest {
 		try {
 			is = part.getInputStream();
 			dis = new DataInputStream(is);
-			byte[] buf = new byte[is.available()];
+			byte[] buf = new byte[(int)Math.min(part.size(), maxlength)];
 			dis.readFully(buf);
 			return buf;
 		} catch (IOException ioe) {
@@ -669,6 +726,7 @@ public class HTTPRequestImpl implements HTTPRequest {
 	
 	@Override
 	public byte[] getPartAsBytesThrowing(String name, int maxLength) throws NoSuchElementException, SizeLimitExceededException {
+		if(freedParts) throw new IllegalStateException("Already freed");
 		Bucket part = this.parts.get(name);
 		
 		if(part == null)
@@ -682,6 +740,7 @@ public class HTTPRequestImpl implements HTTPRequest {
 	
 	@Override
 	public byte[] getPartAsBytesFailsafe(String name, int maxLength) {
+		if(freedParts) throw new IllegalStateException("Already freed");
 		Bucket part = this.parts.get(name);
 		return part == null ? new byte[0] : getPartAsLimitedBytes(part, maxLength);
 	}
@@ -692,7 +751,7 @@ public class HTTPRequestImpl implements HTTPRequest {
 		try {
 			is = part.getInputStream();
 			dis = new DataInputStream(is);
-			byte[] buf = new byte[Math.min(dis.available(), maxLength)];
+			byte[] buf = new byte[(int)Math.min(part.size(), maxLength)];
 			dis.readFully(buf, 0, buf.length);
 			return buf;
 		} catch (IOException ioe) {
@@ -715,7 +774,7 @@ public class HTTPRequestImpl implements HTTPRequest {
 			b.free();
 		}
 		parts.clear();
-		
+		freedParts = true;
 		// Do not free data. Caller is responsible for that.
 	}
 
@@ -822,7 +881,24 @@ public class HTTPRequestImpl implements HTTPRequest {
 
 	@Override
 	public String[] getParts() {
+		if(freedParts) throw new IllegalStateException("Already freed");
 		return parts.keySet().toArray(new String[parts.size()]);
+	}
+
+	@Override
+	public boolean isIncognito() {
+		if(isParameterSet("incognito"))
+			return Boolean.valueOf(getParam("incognito"));
+		return false;
+	}
+
+	@Override
+	public boolean isChrome() {
+		String ua = getHeader("user-agent");
+		if(ua != null) {
+			if(ua.contains("Chrome")) return true;
+		}
+		return false;
 	}
 
 }

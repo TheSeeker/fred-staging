@@ -1,9 +1,9 @@
 package freenet.clients.http;
 
 import freenet.client.HighLevelSimpleClient;
+import freenet.clients.http.PageMaker.RenderParameters;
 import freenet.l10n.NodeL10n;
 import freenet.node.Node;
-import freenet.node.NodeClientCore;
 import freenet.support.HTMLNode;
 import freenet.support.MultiValueTable;
 import freenet.support.api.HTTPRequest;
@@ -21,12 +21,10 @@ public class ExternalLinkToadlet extends Toadlet {
 	private static final String magicHTTPEscapeString = "_CHECKED_HTTP_";
 
 	private final Node node;
-	private final NodeClientCore core;
 
-	ExternalLinkToadlet(HighLevelSimpleClient client, NodeClientCore core, Node node) {
+	ExternalLinkToadlet(HighLevelSimpleClient client, Node node) {
 		super(client);
 		this.node = node;
-		this.core = core;
 	}
 
 	@Override
@@ -35,14 +33,6 @@ public class ExternalLinkToadlet extends Toadlet {
 	}
 
 	public void handleMethodPOST(URI uri, HTTPRequest request, ToadletContext ctx) throws ToadletContextClosedException, IOException {
-		String password = request.getPartAsStringFailsafe("formPassword", 32);
-		if ((password == null) || !password.equals(core.formPassword)) {
-			MultiValueTable<String, String> headers = new MultiValueTable<String, String>();
-			headers.put("Location", PATH);
-			ctx.sendReplyHeaders(302, "Found", headers, null, 0);
-			return;
-		}
-
 		String url = request.getPartAsStringFailsafe(magicHTTPEscapeString, MAX_URL_LENGTH);
 		MultiValueTable<String, String> headers = new MultiValueTable<String, String>();
 		//If the user clicked cancel, or the URL is not defined, return to the main page.
@@ -68,7 +58,7 @@ public class ExternalLinkToadlet extends Toadlet {
 		//Confirm whether the user really means to access an HTTP link.
 		//Only render status and navigation bars if the user has completed the wizard.
 		boolean renderBars = node.clientCore.getToadletContainer().fproxyHasCompletedWizard();
-		PageNode page = ctx.getPageMaker().getPageNode(l10n("confirmExternalLinkTitle"), renderBars, renderBars, ctx);
+		PageNode page = ctx.getPageMaker().getPageNode(l10n("confirmExternalLinkTitle"), ctx, new RenderParameters().renderNavigationLinks(renderBars).renderStatus(renderBars));
 		HTMLNode pageNode = page.outer;
 		HTMLNode contentNode = page.content;
 		HTMLNode warnboxContent = ctx.getPageMaker().getInfobox("infobox-warning",
@@ -88,7 +78,7 @@ public class ExternalLinkToadlet extends Toadlet {
 			new String[]{"type", "name", "value"},
 			new String[]{"submit", "Go", l10n("goToExternalLink")});
 
-		this.writeHTMLReply(ctx, 200, "OK", pageNode.generate());
+		this.writeHTMLReply(ctx, 200, "OK", null, pageNode.generate(), true);
 	}
 
 	/**

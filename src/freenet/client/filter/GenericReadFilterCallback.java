@@ -10,6 +10,7 @@ import java.net.URISyntaxException;
 import java.net.URLEncoder;
 import java.nio.charset.Charset;
 import java.util.HashSet;
+import java.util.regex.Pattern;
 
 import freenet.client.filter.HTMLFilter.ParsedTag;
 import freenet.clients.http.ExternalLinkToadlet;
@@ -103,18 +104,23 @@ public class GenericReadFilterCallback implements FilterCallback, URIProcessor {
 	//  unreserved    = ALPHA / DIGIT / "-" / "." / "_" / "~"
 	protected static final String UNRESERVED = "[a-zA-Z0-9\\-\\._~]";
 	//  pct-encoded   = "%" HEXDIG HEXDIG
-	protected static final String PCT_ENCODED = "%[0-9A-Fa-f][0-9A-Fa-f]";
+	protected static final String PCT_ENCODED = "(?:%[0-9A-Fa-f][0-9A-Fa-f])";
 	//  sub-delims    = "!" / "$" / "&" / "'" / "(" / ")"
 	//                / "*" / "+" / "," / ";" / "="
 	protected static final String SUB_DELIMS  = "[\\!\\$&'\\(\\)\\*\\+,;=]";
 	//  pchar         = unreserved / pct-encoded / sub-delims / ":" / "@"
-	protected static final String PCHAR      = "(" + UNRESERVED + "|" + PCT_ENCODED + "|" + SUB_DELIMS + "|[:@])";
+	protected static final String PCHAR      = "(?>" + UNRESERVED + "|" + PCT_ENCODED + "|" + SUB_DELIMS + "|[:@])";
 	//  fragment      = *( pchar / "/" / "?" )
-	protected static final String FRAGMENT   = "(" + PCHAR + "|\\/|\\?)*";
+	protected static final String FRAGMENT   = "(?>" + PCHAR + "|\\/|\\?)*";
+
+	private static final Pattern anchorRegex;
+	static {
+	    anchorRegex = Pattern.compile("^#" + FRAGMENT + "$");
+	}
 
 	@Override
 	public String processURI(String u, String overrideType, boolean forBaseHref, boolean inline) throws CommentException {
-		if(u.matches("^#" + FRAGMENT + "$")) {
+		if(anchorRegex.matcher(u).matches()) {
 			// Hack for anchors, see #710
 			return u;
 		}
@@ -419,12 +425,9 @@ public class GenericReadFilterCallback implements FilterCallback, URIProcessor {
 		method = method.toUpperCase();
 		if(!(method.equals("POST") || method.equals("GET"))) 
 			return null; // no irregular form sending methods
-		// Everything is allowed to / - updating the node, shutting it down, everything.
-		// Why? Becuase it's all protected by formPassword anyway.
-		// FIXME whitelist? Most things are okay if the user is prompted for a confirmation...
 		// FIXME what about /downloads/ /friends/ etc?
 		// Allow access to Library for searching, form passwords are used for actions such as adding bookmarks
-		if(action.equals("/") || action.equals("/library/"))
+		if(action.equals("/library/"))
 			return action;
 		try {
 			URI uri = URIPreEncoder.encodeURI(action);
@@ -455,5 +458,11 @@ public class GenericReadFilterCallback implements FilterCallback, URIProcessor {
 		}else{
 			return null;
 		}
+	}
+
+	@Override
+	public void onFinished() {
+		if(cb != null)
+			cb.onFinishedPage();
 	}
 }

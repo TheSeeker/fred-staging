@@ -26,6 +26,8 @@ public class PeerNodeStatus {
 	private final String peerAddress;
 	/** This one is always an IP address or null. */
 	private final String peerAddressNumerical;
+	/** This one is always an IP address or null. */
+	private final byte[] peerAddressBytes;
 
 	private final int peerPort;
 
@@ -42,8 +44,8 @@ public class PeerNodeStatus {
 
 	private final int simpleVersion;
 
-	private final int routingBackoffLengthRT;
-	private final int routingBackoffLengthBulk;
+	private final long routingBackoffLengthRT;
+	private final long routingBackoffLengthBulk;
 
 	private final long routingBackedOffUntilRT;
 	private final long routingBackedOffUntilBulk;
@@ -62,8 +64,7 @@ public class PeerNodeStatus {
 	private final boolean publicInvalidVersion;
 
 	private final boolean publicReverseInvalidVersion;
-	
-	private final double backedOffPercent;
+
 	private final double backedOffPercentRT;
 	private final double backedOffPercentBulk;
 
@@ -128,6 +129,7 @@ public class PeerNodeStatus {
 		if(p == null) {
 			peerAddress = null;
 			peerAddressNumerical = null;
+			peerAddressBytes = null;
 			peerPort = -1;
 		} else {
 			FreenetInetAddress a = p.getFreenetAddress();
@@ -135,8 +137,10 @@ public class PeerNodeStatus {
 			InetAddress i = a.getAddress(false);
 			if(i != null) {
 				peerAddressNumerical = i.getHostAddress();
+				peerAddressBytes = i.getAddress();
 			} else {
 				peerAddressNumerical = null;
+				peerAddressBytes = null;
 			}
 			peerPort = p.getPort();
 		}
@@ -160,7 +164,6 @@ public class PeerNodeStatus {
 		this.averagePingTimeCorrected = peerNode.averagePingTimeCorrected();
 		this.publicInvalidVersion = peerNode.publicInvalidVersion();
 		this.publicReverseInvalidVersion = peerNode.publicReverseInvalidVersion();
-		this.backedOffPercent = peerNode.backedOffPercent.currentValue();
 		this.backedOffPercentRT = peerNode.backedOffPercentRT.currentValue();
 		this.backedOffPercentBulk = peerNode.backedOffPercentBulk.currentValue();
 		this.lastBackoffReasonRT = peerNode.getLastBackoffReason(true);
@@ -235,8 +238,8 @@ public class PeerNodeStatus {
 	 */
 	public static int getPeerStatusCount(PeerNodeStatus[] peerNodeStatuses, int status) {
 		int count = 0;
-		for (int peerIndex = 0, peerCount = peerNodeStatuses.length; peerIndex < peerCount; peerIndex++) {
-			if (peerNodeStatuses[peerIndex].getStatusValue() == status) {
+		for (PeerNodeStatus peerNodeStatus: peerNodeStatuses) {
+			if (peerNodeStatus.getStatusValue() == status) {
 				count++;
 			}
 		}
@@ -332,6 +335,13 @@ public class PeerNodeStatus {
 	}
 
 	/**
+	 * @return the peer address, as raw bytes, or null if not known.
+	 */
+	public byte[] getPeerAddressBytes() {
+		return peerAddressBytes;
+	}
+
+	/**
 	 * @return the peerPort
 	 */
 	public int getPeerPort() {
@@ -341,7 +351,7 @@ public class PeerNodeStatus {
 	/**
 	 * @return the routingBackoffLength
 	 */
-	public int getRoutingBackoffLength(boolean realTime) {
+	public long getRoutingBackoffLength(boolean realTime) {
 		return realTime ? routingBackoffLengthRT : routingBackoffLengthBulk;
 	}
 

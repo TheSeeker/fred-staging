@@ -35,40 +35,41 @@ public class AnnounceSender implements PrioRunnable, ByteCounter {
 
 	// Constants
 	static final int ACCEPTED_TIMEOUT = 10000;
-	static final int ANNOUNCE_TIMEOUT = 240000; // longer than a regular request as have to transfer noderefs hop by hop etc
+	static final int ANNOUNCE_TIMEOUT = 120000; // longer than a regular request as have to transfer noderefs hop by hop etc
 	static final int END_TIMEOUT = 30000; // After received the completion message, wait 30 seconds for any late reordered replies
 
 	private final PeerNode source;
 	private final long uid;
 	private final OpennetManager om;
 	private final Node node;
-	private Message msg;
+	private final long xferUID;
+	private final int noderefLength;
+	private final int paddedLength;
 	private byte[] noderefBuf;
-	private int noderefLength;
 	private short htl;
 	private double target;
 	private final AnnouncementCallback cb;
 	private final PeerNode onlyNode;
 	private int forwardedRefs;
 
-	public AnnounceSender(Message m, long uid, PeerNode source, OpennetManager om, Node node) {
+	public AnnounceSender(double target, short htl, long uid, PeerNode source, OpennetManager om, Node node, long xferUID, int noderefLength, int paddedLength, AnnouncementCallback cb) {
 		this.source = source;
 		this.uid = uid;
-		this.msg = m;
 		this.om = om;
 		this.node = node;
 		this.onlyNode = null;
-		htl = (short) Math.min(m.getShort(DMT.HTL), node.maxHTL());
-		target = m.getDouble(DMT.TARGET_LOCATION); // FIXME validate
-		cb = null;
+		this.htl = htl;
+		this.xferUID = xferUID;
+		this.paddedLength = paddedLength;
+		this.noderefLength = noderefLength;
+		this.cb = cb;
 	}
 
 	public AnnounceSender(double target, OpennetManager om, Node node, AnnouncementCallback cb, PeerNode onlyNode) {
 		source = null;
 		this.uid = node.random.nextLong();
 		// Prevent it being routed back to us.
-		node.completed(uid);
-		msg = null;
+		node.tracker.completed(uid);
 		this.om = om;
 		this.node = node;
 		this.htl = node.maxHTL();
@@ -76,6 +77,9 @@ public class AnnounceSender implements PrioRunnable, ByteCounter {
 		this.cb = cb;
 		this.onlyNode = onlyNode;
 		noderefBuf = om.crypto.myCompressedFullRef();
+		this.xferUID = 0;
+		this.paddedLength = 0;
+		this.noderefLength = 0;
 	}
 
 	@Override
@@ -89,7 +93,7 @@ public class AnnounceSender implements PrioRunnable, ByteCounter {
 			if(source != null) {
 				source.completedAnnounce(uid);
 			}
-			node.completed(uid);
+			node.tracker.completed(uid);
 			if(cb != null)
 				cb.completed();
 			node.nodeStats.endAnnouncement(uid);
@@ -122,7 +126,8 @@ public class AnnounceSender implements PrioRunnable, ByteCounter {
 			 * 2) The node which just failed can be seen as the requestor for our purposes.
 			 */
 			// Decrement at this point so we can DNF immediately on reaching HTL 0.
-			htl = node.decrementHTL(hasForwarded ? next : source, htl);
+			if(onlyNode == null)
+				htl = node.decrementHTL(hasForwarded ? next : source, htl);
 
 			if(htl == 0) {
 				// No more nodes.
@@ -258,7 +263,7 @@ public class AnnounceSender implements PrioRunnable, ByteCounter {
 				MessageFilter mfAnnounceReply = MessageFilter.create().setSource(next).setField(DMT.UID, uid).setTimeout(ANNOUNCE_TIMEOUT).setType(DMT.FNPOpennetAnnounceReply);
 				MessageFilter mfOpennetDisabled = MessageFilter.create().setSource(next).setField(DMT.UID, uid).setTimeout(ANNOUNCE_TIMEOUT).setType(DMT.FNPOpennetDisabled);
 				MessageFilter mfNotWanted = MessageFilter.create().setSource(next).setField(DMT.UID, uid).setTimeout(ANNOUNCE_TIMEOUT).setType(DMT.FNPOpennetAnnounceNodeNotWanted);
-				MessageFilter mfOpennetNoderefRejected = MessageFilter.create().setSource(next).setField(DMT.UID, uid).setTimeout(ACCEPTED_TIMEOUT).setType(DMT.FNPOpennetNoderefRejected);
+				MessageFilter mfOpennetNoderefRejected = MessageFilter.create().setSource(next).setField(DMT.UID, uid).setTimeout(ANNOUNCE_TIMEOUT).setType(DMT.FNPOpennetNoderefRejected);
 				MessageFilter mf = mfAnnounceCompleted.or(mfRouteNotFound.or(mfRejectedOverload.or(mfAnnounceReply.or(mfOpennetDisabled.or(mfNotWanted.or(mfOpennetNoderefRejected))))));
 
 				try {
@@ -394,6 +399,9 @@ public class AnnounceSender implements PrioRunnable, ByteCounter {
 						try {
 							forwardedRefs++;
 							om.sendAnnouncementReply(uid, source, noderefBuf, AnnounceSender.this);
+							if(cb != null) {
+								cb.relayedNoderef();
+							}
 						} catch (NotConnectedException e) {
 							// Hmmm...!
 							return;
@@ -402,10 +410,12 @@ public class AnnounceSender implements PrioRunnable, ByteCounter {
 						// Add it
 						try {
 							OpennetPeerNode pn = node.addNewOpennetNode(fs, ConnectionType.ANNOUNCE);
-							if(pn != null)
-								cb.addedNode(pn);
-							else
-								cb.nodeNotAdded();
+							if(cb != null) {
+								if(pn != null)
+									cb.addedNode(pn);
+								else
+									cb.nodeNotAdded();
+							}
 						} catch (FSParseException e) {
 							Logger.normal(this, "Failed to parse reply: "+e, e);
 							if(cb != null) cb.bogusNoderef("parse failed: "+e);
@@ -511,9 +521,6 @@ public class AnnounceSender implements PrioRunnable, ByteCounter {
 	 * @return True unless the noderef is bogus.
 	 */
 	private boolean transferNoderef() {
-		long xferUID = msg.getLong(DMT.TRANSFER_UID);
-		noderefLength = msg.getInt(DMT.NODEREF_LENGTH);
-		int paddedLength = msg.getInt(DMT.PADDED_LENGTH);
 		noderefBuf = OpennetManager.innerWaitForOpennetNoderef(xferUID, paddedLength, noderefLength, source, false, uid, true, this, node);
 		if(noderefBuf == null) {
 			return false;

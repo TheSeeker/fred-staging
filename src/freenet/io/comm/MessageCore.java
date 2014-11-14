@@ -18,12 +18,16 @@
  */
 package freenet.io.comm;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.MINUTES;
+import static java.util.concurrent.TimeUnit.SECONDS;
+
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.ListIterator;
 import java.util.Map;
-import java.util.Vector;
 
 import freenet.io.comm.MessageFilter.MATCHED;
 import freenet.node.PeerNode;
@@ -56,11 +60,11 @@ public class MessageCore {
 	private final LinkedList<MessageFilter> _filters = new LinkedList<MessageFilter>();
 	private final LinkedList<Message> _unclaimed = new LinkedList<Message>();
 	private static final int MAX_UNMATCHED_FIFO_SIZE = 50000;
-	private static final long MAX_UNCLAIMED_FIFO_ITEM_LIFETIME = 10*60*1000;  // 10 minutes; maybe this should be per message type??
+	private static final long MAX_UNCLAIMED_FIFO_ITEM_LIFETIME = MINUTES.toMillis(10);  // maybe this should be per message type??
 	// FIXME do we need MIN_FILTER_REMOVE_TIME? Can we make this more efficient?
 	// FIXME may not work well for newly added filters with timeouts close to the minimum, or filters with timeouts close to the minimum in general.
-	private static final int MAX_FILTER_REMOVE_TIME = 1000;
-	private static final int MIN_FILTER_REMOVE_TIME = 100;
+	private static final long MAX_FILTER_REMOVE_TIME = SECONDS.toMillis(1);
+	private static final long MIN_FILTER_REMOVE_TIME = MILLISECONDS.toMillis(100);
 	private long startedTime;
 	
 	public synchronized long getStartedTime() {
@@ -68,7 +72,6 @@ public class MessageCore {
 	}
 
 	public MessageCore(Executor executor) {
-		_timedOutFilters = new Vector<MessageFilter>(32);
 		_executor = executor;
 	}
 
@@ -89,10 +92,6 @@ public class MessageCore {
         }
     }
 
-    /** Only used by removeTimedOutFilters() - if future code uses this elsewhere, we need to
-     * reconsider its locking. */
-    private final Vector<MessageFilter> _timedOutFilters;
-    
     public void start(final Ticker ticker) {
     	synchronized(this) {
     		startedTime = System.currentTimeMillis();
@@ -124,6 +123,7 @@ public class MessageCore {
 		// Avoids exhaustive and unsuccessful search in waitFor() removal of a timed out filter.
 		if(logMINOR)
 			Logger.minor(this, "Removing timed out filters");
+		HashSet<MessageFilter> timedOutFilters = null;
 		synchronized (_filters) {
 			for (ListIterator<MessageFilter> i = _filters.listIterator(); i.hasNext();) {
 				MessageFilter f = i.next();
@@ -131,9 +131,9 @@ public class MessageCore {
 					if(logMINOR)
 						Logger.minor(this, "Removing "+f);
 					i.remove();
-					if(!_timedOutFilters.contains(f))
-						_timedOutFilters.add(f);
-					else
+					if(timedOutFilters == null) 
+						timedOutFilters = new HashSet<MessageFilter>();
+					if(!timedOutFilters.add(f))
 						Logger.error(this, "Filter "+f+" is in filter list twice!");
 					if(logMINOR) {
 						for (ListIterator<Message> it = _unclaimed.listIterator(); it.hasNext();) {
@@ -158,11 +158,12 @@ public class MessageCore {
 			}
 		}
 		
-		for(MessageFilter f : _timedOutFilters) {
-			f.setMessage(null);
-			f.onTimedOut(_executor);
+		if(timedOutFilters != null) {
+			for(MessageFilter f : timedOutFilters) {
+				f.setMessage(null);
+				f.onTimedOut(_executor);
+			}
 		}
-		_timedOutFilters.clear();
 		
 		long tEnd = System.currentTimeMillis();
 		if(tEnd - tStart > 50) {
@@ -180,6 +181,8 @@ public class MessageCore {
 	 * @param m The Message to dispatch.
 	 */
 	public void checkFilters(Message m, PacketSocketHandler from) {
+		final boolean logMINOR = MessageCore.logMINOR;
+		final boolean logDEBUG = MessageCore.logDEBUG;
 		long tStart = System.currentTimeMillis();
 		if(logMINOR) Logger.minor(this, "checkFilters: "+m+" from "+m.getSource());
 		if ((m.getSource()) instanceof PeerNode)

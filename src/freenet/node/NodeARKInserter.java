@@ -6,14 +6,13 @@ package freenet.node;
 import java.io.UnsupportedEncodingException;
 import java.net.UnknownHostException;
 
-import com.db4o.ObjectContainer;
-
 import freenet.client.InsertContext;
 import freenet.client.InsertException;
 import freenet.client.async.BaseClientPutter;
+import freenet.client.async.ClientContext;
 import freenet.client.async.ClientPutCallback;
 import freenet.client.async.ClientPutter;
-import freenet.client.async.DatabaseDisabledException;
+import freenet.client.async.PersistenceDisabledException;
 import freenet.io.comm.Peer;
 import freenet.io.comm.PeerParseException;
 import freenet.keys.FreenetURI;
@@ -23,6 +22,7 @@ import freenet.support.SimpleFieldSet;
 import freenet.support.SimpleReadOnlyArrayBucket;
 import freenet.support.Logger.LogLevel;
 import freenet.support.api.Bucket;
+import freenet.support.api.RandomAccessBucket;
 
 public class NodeARKInserter implements ClientPutCallback, RequestClient {
 
@@ -57,10 +57,23 @@ public class NodeARKInserter implements ClientPutCallback, RequestClient {
 	void start() {
 		if(!enabled) return;
 		canStart = true;
-		update();
+		innerUpdate();
 	}
 	
 	public void update() {
+		// Called by detector code, which is critical and convoluted.
+		// Run off-thread, break locks, avoid stalling caller.
+		node.executor.execute(new Runnable() {
+
+			@Override
+			public void run() {
+				innerUpdate();
+			}
+			
+		});
+	}
+	
+	private void innerUpdate() {
 		logMINOR = Logger.shouldLog(LogLevel.MINOR, this);
 		if(logMINOR) Logger.minor(this, "update()");
 		if(!checkIPUpdated()) return;
@@ -147,7 +160,7 @@ public class NodeARKInserter implements ClientPutCallback, RequestClient {
 			throw new Error("Impossible: JVM doesn't support UTF-8: " + e, e);
 		}
 		
-		Bucket b = new SimpleReadOnlyArrayBucket(buf);
+		RandomAccessBucket b = new SimpleReadOnlyArrayBucket(buf);
 		
 		long number = crypto.myARKNumber;
 		InsertableClientSSK ark = crypto.myARK;
@@ -155,15 +168,15 @@ public class NodeARKInserter implements ClientPutCallback, RequestClient {
 		
 		if(logMINOR) Logger.minor(this, "Inserting " + darknetOpennetString + " ARK: " + uri + "  contents:\n" + s);
 		
-		InsertContext ctx = node.clientCore.makeClient((short)0, true).getInsertContext(true);
+		InsertContext ctx = node.clientCore.makeClient((short)0, true, false).getInsertContext(true);
 		inserter = new ClientPutter(this, b, uri,
 					null, // Modern ARKs easily fit inside 1KB so should be pure SSKs => no MIME type; this improves fetchability considerably
 					ctx,
-					RequestStarter.INTERACTIVE_PRIORITY_CLASS, false, false, this, null, false, node.clientCore.clientContext, null, -1);
+					RequestStarter.INTERACTIVE_PRIORITY_CLASS, false, null, false, node.clientCore.clientContext, null, -1);
 		
 		try {
 			
-			node.clientCore.clientContext.start(inserter, false);
+			node.clientCore.clientContext.start(inserter);
 			
 			synchronized (this) {
 				if(fs.get("physical.udp") == null)
@@ -183,14 +196,14 @@ public class NodeARKInserter implements ClientPutCallback, RequestClient {
 				}
 			}
 		} catch (InsertException e) {
-			onFailure(e, inserter, null);	
-		} catch (DatabaseDisabledException e) {
+			onFailure(e, inserter);	
+		} catch (PersistenceDisabledException e) {
 			// Impossible
 		}
 	}
 	
 	@Override
-	public void onSuccess(BaseClientPutter state, ObjectContainer container) {
+	public void onSuccess(BaseClientPutter state) {
 		FreenetURI uri = state.getURI();
 		if(logMINOR) Logger.minor(this, darknetOpennetString + " ARK insert succeeded: " + uri);
 		synchronized (this) {
@@ -202,7 +215,7 @@ public class NodeARKInserter implements ClientPutCallback, RequestClient {
 	}
 
 	@Override
-	public void onFailure(InsertException e, BaseClientPutter state, ObjectContainer container) {
+	public void onFailure(InsertException e, BaseClientPutter state) {
 		if(logMINOR) Logger.minor(this, darknetOpennetString + " ARK insert failed: "+e);
 		synchronized(this) {
 			lastInsertedPeers = null;
@@ -219,7 +232,7 @@ public class NodeARKInserter implements ClientPutCallback, RequestClient {
 	}
 
 	@Override
-	public void onGeneratedURI(FreenetURI uri, BaseClientPutter state, ObjectContainer container) {
+	public void onGeneratedURI(FreenetURI uri, BaseClientPutter state) {
 		if(logMINOR) Logger.minor(this, "Generated URI for " + darknetOpennetString + " ARK: "+uri);
 		long l = uri.getSuggestedEdition();
 		if(l < crypto.myARKNumber) {
@@ -254,12 +267,7 @@ public class NodeARKInserter implements ClientPutCallback, RequestClient {
 	}
 
 	@Override
-	public void onMajorProgress(ObjectContainer container) {
-		// Ignore
-	}
-
-	@Override
-	public void onFetchable(BaseClientPutter state, ObjectContainer container) {
+	public void onFetchable(BaseClientPutter state) {
 		// Ignore, we don't care
 	}
 
@@ -269,20 +277,24 @@ public class NodeARKInserter implements ClientPutCallback, RequestClient {
 	}
 
 	@Override
-	public void removeFrom(ObjectContainer container) {
-		throw new UnsupportedOperationException();
-	}
-
-	@Override
 	public boolean realTimeFlag() {
 		return false;
 	}
 
 	@Override
-	public void onGeneratedMetadata(Bucket metadata, BaseClientPutter state,
-			ObjectContainer container) {
+	public void onGeneratedMetadata(Bucket metadata, BaseClientPutter state) {
 		Logger.error(this, "Bogus onGeneratedMetadata() on "+this+" from "+state, new Exception("error"));
 		metadata.free();
 	}
+
+    @Override
+    public void onResume(ClientContext context) {
+        // Not persistent.
+    }
+
+    @Override
+    public RequestClient getRequestClient() {
+        return this;
+    }
 
 }

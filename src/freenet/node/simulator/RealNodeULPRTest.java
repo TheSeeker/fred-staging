@@ -80,7 +80,7 @@ public class RealNodeULPRTest extends RealNodeTest {
 	static final FRIEND_TRUST trust = FRIEND_TRUST.LOW;
 	static final FRIEND_VISIBILITY visibility = FRIEND_VISIBILITY.NO;
 
-    public static final int DARKNET_PORT_BASE = RealNodeSecretPingTest.DARKNET_PORT_END;
+    public static final int DARKNET_PORT_BASE = RealNodePingTest.DARKNET_PORT_END;
     public static final int DARKNET_PORT_END = DARKNET_PORT_BASE + NUMBER_OF_NODES;
     
     public static void main(String[] args) throws FSParseException, PeerParseException, CHKEncodeException, InvalidThresholdException, NodeInitException, ReferenceSignatureVerificationException, KeyCollisionException, SSKEncodeException, IOException, InterruptedException, SSKVerifyException, InvalidCompressionCodecException {
@@ -127,7 +127,7 @@ public class RealNodeULPRTest extends RealNodeTest {
         // Now add some random links
         for(int i=0;i<NUMBER_OF_NODES*5;i++) {
             if(i % NUMBER_OF_NODES == 0)
-                Logger.normal(RealNodeRoutingTest.class, ""+i);
+                Logger.normal(RealNodeRoutingTest.class, String.valueOf(i));
             int length = (int)Math.pow(NUMBER_OF_NODES, random.nextDouble());
             int nodeA = random.nextInt(NUMBER_OF_NODES);
             int nodeB = (nodeA+length)%NUMBER_OF_NODES;
@@ -140,8 +140,8 @@ public class RealNodeULPRTest extends RealNodeTest {
         
         Logger.normal(RealNodeRoutingTest.class, "Added random links");
         
-        for(int i=0;i<NUMBER_OF_NODES;i++)
-            nodes[i].start(false);
+		for(Node node: nodes)
+            node.start(false);
         
         int successfulTests = 0;
         
@@ -209,8 +209,8 @@ public class RealNodeULPRTest extends RealNodeTest {
         	
         };
         
-        for(int i=0;i<nodes.length;i++) {
-        	nodes[i].setDispatcherHook(cb);
+        for(Node node: nodes) {
+        	node.setDispatcherHook(cb);
         }
         
         for(int i=0;i<nodes.length;i++) {
@@ -254,7 +254,7 @@ public class RealNodeULPRTest extends RealNodeTest {
         
         Logger.normal(RealNodeULPRTest.class, "Inserting to node "+(nodes.length-1));
 		long tStart = System.currentTimeMillis();
-		nodes[nodes.length-1].store(block, false, false, true, false); // Write to datastore
+		nodes[nodes.length-1].store(block.getBlock(), false, false, true, false); // Write to datastore
         Logger.normal(RealNodeULPRTest.class, "Inserted to node "+(nodes.length-1));
 		
 		int x = -1;
@@ -262,8 +262,8 @@ public class RealNodeULPRTest extends RealNodeTest {
 			x++;
 			Thread.sleep(1000);
 			int count = 0;
-			for(int i=0;i<nodes.length;i++) {
-				if(nodes[i].hasKey(fetchKey.getNodeKey(false), true, true))
+			for(Node node: nodes) {
+				if(node.hasKey(fetchKey.getNodeKey(false), true, true))
 					count++;
 			}
 			System.err.println("T="+x+" : "+count+'/'+nodes.length+" have the data on test "+successfulTests+".");

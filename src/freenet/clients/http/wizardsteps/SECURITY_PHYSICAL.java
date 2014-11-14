@@ -1,5 +1,7 @@
 package freenet.clients.http.wizardsteps;
 
+import java.io.IOException;
+
 import freenet.clients.http.ExternalLinkToadlet;
 import freenet.clients.http.FirstTimeWizardToadlet;
 import freenet.clients.http.SecurityLevelsToadlet;
@@ -12,9 +14,8 @@ import freenet.node.SecurityLevels;
 import freenet.support.HTMLNode;
 import freenet.support.Logger;
 import freenet.support.api.HTTPRequest;
-
-import java.io.File;
-import java.io.IOException;
+import freenet.support.io.FileUtil;
+import freenet.support.io.FileUtil.OperatingSystem;
 
 /**
  * Allows the user to set the physical security level.
@@ -57,11 +58,15 @@ public class SECURITY_PHYSICAL implements Step {
 		HTMLNode div = form.addChild("div", "class", "opennetDiv");
 		String controlName = "security-levels.physicalThreatLevel";
 		HTMLNode swapWarning = div.addChild("p").addChild("i");
-		NodeL10n.getBase().addL10nSubstitution(swapWarning, "SecurityLevels.physicalThreatLevelSwapfile",
+		NodeL10n.getBase().addL10nSubstitution(swapWarning, "SecurityLevels.physicalThreatLevelTruecrypt",
 		        new String[]{"bold", "truecrypt"},
 		        new HTMLNode[]{HTMLNode.STRONG,
 		                HTMLNode.linkInNewWindow(ExternalLinkToadlet.escape("http://www.truecrypt.org/"))});
-		if(File.separatorChar == '\\') {
+		OperatingSystem os = FileUtil.detectedOS;
+		div.addChild("p", NodeL10n.getBase().getString("SecurityLevels.physicalThreatLevelSwapfile",
+		        "operatingSystem",
+		        NodeL10n.getBase().getString("OperatingSystemName."+os.name())));
+		if(os == FileUtil.OperatingSystem.Windows) {
 			swapWarning.addChild("#", " " + WizardL10n.l10nSec("physicalThreatLevelSwapfileWindows"));
 		}
 		for(SecurityLevels.PHYSICAL_THREAT_LEVEL level : SecurityLevels.PHYSICAL_THREAT_LEVEL.values()) {

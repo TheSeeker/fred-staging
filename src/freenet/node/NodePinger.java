@@ -3,6 +3,8 @@
  * http://www.gnu.org/ for further details of the GPL. */
 package freenet.node;
 
+import static java.util.concurrent.TimeUnit.DAYS;
+
 import java.util.Arrays;
 
 import freenet.node.NodeStats.PeerLoadStats;
@@ -28,9 +30,9 @@ public class NodePinger implements Runnable {
 
 	private final Node node;
 	private volatile double meanPing = 0;
-	
-	public static final double CRAZY_MAX_PING_TIME = 365.25*24*60*60*1000;
-	
+
+	public static final double CRAZY_MAX_PING_TIME = 365.25 * DAYS.toMillis(1);
+
 	NodePinger(Node n) {
 		this.node = n;
 	}
@@ -44,10 +46,9 @@ public class NodePinger implements Runnable {
         try {
         PeerNode[] peers = null;
         synchronized(node.peers) {
-	    if((node.peers.connectedPeers == null) || (node.peers.connectedPeers.length == 0)) return;
-	    peers = new PeerNode[node.peers.connectedPeers.length];
-            System.arraycopy(node.peers.connectedPeers, 0, peers, 0, node.peers.connectedPeers.length);
+        	peers = node.peers.connectedPeers();
         }
+        if(peers == null || peers.length == 0) return;
 
         // Now we don't have to care about synchronization anymore
         recalculateMean(peers);
@@ -106,16 +107,13 @@ public class NodePinger implements Runnable {
 		void calculate(PeerNode[] peers) {
 			double[] allPeers = new double[peers.length];
 			int x = 0;
-			for(int i = 0; i < peers.length; i++) {
-				PeerNode peer = peers[i];
+			for(PeerNode peer : peers) {
 				PeerLoadStats stats = peer.outputLoadTracker(isRealtime).getLastIncomingLoadStats();
 				if(stats == null) continue;
 				allPeers[x++] = stats.peerLimit(isInput);
 			}
 			if(x != peers.length) {
-				double[] newPeers = new double[x];
-				System.arraycopy(allPeers, 0, newPeers, 0, x);
-				allPeers = newPeers;
+				allPeers = Arrays.copyOf(allPeers, x);
 			}
 			Arrays.sort(allPeers);
 			if(x == 0) return;

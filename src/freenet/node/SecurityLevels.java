@@ -37,8 +37,12 @@ public class SecurityLevels {
 		HIGH, // darknet only, normal settings otherwise
 		MAXIMUM; // paranoid - darknet only, turn off FOAF etc etc
 		
-		public static final NETWORK_THREAT_LEVEL[] OPENNET_VALUES = new NETWORK_THREAT_LEVEL[] { LOW, NORMAL };
-		public static final NETWORK_THREAT_LEVEL[] DARKNET_VALUES = new NETWORK_THREAT_LEVEL[] { HIGH, MAXIMUM };
+		public static final NETWORK_THREAT_LEVEL[] getOpennetValues() {
+			return new NETWORK_THREAT_LEVEL[] { LOW, NORMAL };
+		}
+		public static final NETWORK_THREAT_LEVEL[] getDarknetValues() {
+			return new NETWORK_THREAT_LEVEL[] { HIGH, MAXIMUM };
+		}
 	}
 	
 	public enum FRIENDS_THREAT_LEVEL {
@@ -310,6 +314,7 @@ public class SecurityLevels {
 		if(newThreatLevel == null) throw new NullPointerException();
 		NETWORK_THREAT_LEVEL oldLevel;
 		synchronized(this) {
+            if(networkThreatLevel == newThreatLevel) return;
 			oldLevel = networkThreatLevel;
 			networkThreatLevel = newThreatLevel;
 		}
@@ -320,6 +325,7 @@ public class SecurityLevels {
 		if(newThreatLevel == null) throw new NullPointerException();
 		PHYSICAL_THREAT_LEVEL oldLevel;
 		synchronized(this) {
+		    if(physicalThreatLevel == newThreatLevel) return;
 			oldLevel = physicalThreatLevel;
 			physicalThreatLevel = newThreatLevel;
 		}

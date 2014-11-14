@@ -3,6 +3,8 @@
  * http://www.gnu.org/ for further details of the GPL. */
 package freenet.crypt;
 
+import static java.util.concurrent.TimeUnit.HOURS;
+
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
@@ -151,7 +153,6 @@ public class Yarrow extends RandomSource {
 					Closer.close(fis);
 				}
 
-			boolean isSystemEntropyAvailable = true;
 			// Read some bits from /dev/urandom
 			try {
 				fis = new FileInputStream("/dev/urandom");
@@ -164,7 +165,6 @@ public class Yarrow extends RandomSource {
 				Logger.normal(this, "Can't read /dev/urandom: " + t, t);
 				// We can't read it; let's skip /dev/random and seed from SecureRandom.generateSeed()
 				canBlock = true;
-				isSystemEntropyAvailable = false;
 			} finally {
 				Closer.close(dis);
 				Closer.close(fis);
@@ -273,7 +273,7 @@ public class Yarrow extends RandomSource {
 		if(!force)
 			synchronized(this) {
 				long now = System.currentTimeMillis();
-				if(now - timeLastWroteSeed <= 60 * 60 * 1000 /* once per hour */)
+				if(now - timeLastWroteSeed <= HOURS.toMillis(1) /* once per hour */)
 					return;
 				else
 					timeLastWroteSeed = now;
@@ -317,13 +317,13 @@ public class Yarrow extends RandomSource {
 		fetch_counter = output_buffer.length;
 	}
 
-	private final void counterInc() {
+	private void counterInc() {
 		for(int i = counter.length - 1; i >= 0; i--)
 			if(++counter[i] != 0)
 				break;
 	}
 
-	private final void generateOutput() {
+	private void generateOutput() {
 		counterInc();
 
 		output_buffer = new byte[counter.length];
@@ -452,8 +452,8 @@ public class Yarrow extends RandomSource {
 	private Map<EntropySource, int[]> entropySeen;
 
 	private void accumulator_init(String digest) throws NoSuchAlgorithmException {
-		fast_pool = MessageDigest.getInstance(digest);
-		slow_pool = MessageDigest.getInstance(digest);
+		fast_pool = MessageDigest.getInstance(digest, Util.mdProviders.get(digest));
+		slow_pool = MessageDigest.getInstance(digest, Util.mdProviders.get(digest));
 		entropySeen = new HashMap<EntropySource, int[]>();
 	}
 
@@ -470,7 +470,7 @@ public class Yarrow extends RandomSource {
 			long thingy = 0;
 			int bytes = 0;
 			for(int j = 0; j < Math.min(length, i + 8); j++) {
-				thingy = (thingy << 8) + buf[j];
+				thingy = (thingy << 8) + (buf[j] & 0xFF);
 				bytes++;
 			}
 			totalRealEntropy += acceptEntropy(source, thingy, bytes * 8, bias);
@@ -634,7 +634,7 @@ public class Yarrow extends RandomSource {
 	private MessageDigest reseed_ctx;
 
 	private void reseed_init(String digest) throws NoSuchAlgorithmException {
-		reseed_ctx = MessageDigest.getInstance(digest);
+		reseed_ctx = MessageDigest.getInstance(digest, Util.mdProviders.get(digest));
 	}
 
 	private void fast_pool_reseed() {

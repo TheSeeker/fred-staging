@@ -53,7 +53,7 @@ public final class MessageFilter {
     /** If true, timeouts are relative to the start of waiting, if false, they are relative to
      * the time of calling setTimeout() */
     private boolean _timeoutFromWait;
-    private int _initialTimeout;
+    private long _initialTimeout;
     private MessageFilter _or;
     private Message _message;
     private long _oldBootID;
@@ -80,7 +80,7 @@ public final class MessageFilter {
         	if(waitFor && _callback != null)
         		throw new IllegalStateException("Cannot wait on a MessageFilter with a callback!");
     		if(!_setTimeout)
-    			Logger.error(this, "No timeout set on filter "+this, new Exception("error"));
+			throw new IllegalStateException("No timeout set on filter " + this + "; cannot wait.");
     		if(_initialTimeout > 0 && _timeoutFromWait)
     			_timeout = System.currentTimeMillis() + _initialTimeout;
     	}
@@ -106,7 +106,7 @@ public final class MessageFilter {
      * @param timeout The time before this filter expires in ms
      * @return This message filter
      */
-	public MessageFilter setTimeout(int timeout) {
+	public MessageFilter setTimeout(long timeout) {
 		_setTimeout = true;
 		_initialTimeout = timeout;
 		_timeout = System.currentTimeMillis() + timeout;
@@ -170,10 +170,19 @@ public final class MessageFilter {
 		return this;
 	}
 
+	/**
+	 * Modifies the filter so that it returns true if either it or the filter in the argument returns true.
+	 * Multiple combinations must be nested: such as filter1.or(filter2.or(filter3))).
+	 * @return reference to this, the modified filter.
+	 */
 	public MessageFilter or(MessageFilter or) {
 		if((or != null) && (_or != null) && or != _or) {
-			// FIXME maybe throw? this is almost certainly a bug, and a nasty one too!
-			Logger.error(this, "or() replacement: "+_or+" -> "+or, new Exception("error"));
+			throw new IllegalStateException("Setting a second .or() on the same filter will replace the " +
+			    "existing one, not add another. " + _or + " would be replaced by " + or + ".");
+		}
+		if(or._initialTimeout != _initialTimeout) {
+			Logger.error(this, "Message filters being or()ed have different timeouts! This is very dangerous! This is "+this+" or is "+or);
+			// FIXME throw new IllegalArgumentException()
 		}
 		_or = or;
 		return this;
@@ -277,7 +286,7 @@ public final class MessageFilter {
         notifyAll();
     }
 
-    public int getInitialTimeout() {
+    public long getInitialTimeout() {
         return _initialTimeout;
     }
     
@@ -452,7 +461,7 @@ public final class MessageFilter {
 					
 				});
 			} else
-				_callback.onTimeout();
+				cb.onTimeout();
 		}
 	}
 

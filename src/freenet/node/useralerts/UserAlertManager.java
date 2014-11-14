@@ -14,9 +14,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
 
+import freenet.clients.fcp.FCPConnectionHandler;
 import freenet.l10n.NodeL10n;
 import freenet.node.NodeClientCore;
-import freenet.node.fcp.FCPConnectionHandler;
 import freenet.support.Base64;
 import freenet.support.HTMLNode;
 import freenet.support.Logger;
@@ -120,8 +120,7 @@ public class UserAlertManager implements Comparator<UserAlert> {
 	 */
 	public void dismissAlert(int alertHashCode) {
 		UserAlert[] userAlerts = getAlerts();
-		for (int index = 0, count = userAlerts.length; index < count; index++) {
-			UserAlert userAlert = userAlerts[index];
+		for (UserAlert userAlert: userAlerts) {
 			if (userAlert.hashCode() == alertHashCode) {
 				if (userAlert.userCanDismiss()) {
 					if (userAlert.shouldUnregisterOnDismiss()) {
@@ -180,17 +179,25 @@ public class UserAlertManager implements Comparator<UserAlert> {
 	 */
 	public HTMLNode createAlerts(boolean showOnlyErrors) {
 		HTMLNode alertsNode = new HTMLNode("div");
-		UserAlert[] alerts = getAlerts();
 		int totalNumber = 0;
-		for (int i = 0; i < alerts.length; i++) {
-			UserAlert alert = alerts[i];
+		for (UserAlert alert: getAlerts()) {
 			if(showOnlyErrors && alert.getPriorityClass() > UserAlert.ERROR)
 				continue;
 			if (!alert.isValid())
 				continue;
 			totalNumber++;
 			alertsNode.addChild("a", "name", alert.anchor());
-			alertsNode.addChild(renderAlert(alert));
+			if(showOnlyErrors) {
+				// Paranoia. Don't break the web interface no matter what.
+				try {
+					alertsNode.addChild(renderAlert(alert));
+				} catch (Throwable t) {
+					Logger.error(this, "FAILED TO RENDER ALERT: "+alert+" : "+t, t);
+				}
+			} else {
+				// Alerts toadlet itself can error, that's OK.
+				alertsNode.addChild(renderAlert(alert));
+			}
 		}
 		if (totalNumber == 0) {
 			return new HTMLNode("#", "");
@@ -255,9 +262,7 @@ public class UserAlertManager implements Comparator<UserAlert> {
 		int numberOfWarning = 0;
 		int numberOfMinor = 0;
 		int totalNumber = 0;
-		UserAlert[] alerts = getAlerts();
-		for (int i = 0; i < alerts.length; i++) {
-			UserAlert alert = alerts[i];
+		for (UserAlert alert: getAlerts()) {
 			if (!alert.isValid())
 				continue;
 			short level = alert.getPriorityClass();
@@ -354,12 +359,11 @@ public class UserAlertManager implements Comparator<UserAlert> {
 
 	public void dumpEvents(HashSet<String> toDump) {
 		// An iterator might be faster, but we don't want to call methods on the alert within the lock.
-		UserAlert[] alerts = getAlerts();
-		for(int i=0;i<alerts.length;i++) {
-			if(!alerts[i].isEventNotification()) continue;
-			if(!toDump.contains(alerts[i].anchor())) continue;
-			unregister(alerts[i]);
-			alerts[i].onDismiss();
+		for(UserAlert alert: getAlerts()) {
+			if(!alert.isEventNotification()) continue;
+			if(!toDump.contains(alert.anchor())) continue;
+			unregister(alert);
+			alert.onDismiss();
 		}
 	}
 
@@ -402,7 +406,7 @@ public class UserAlertManager implements Comparator<UserAlert> {
 		sb.append("  <link href=\"").append(feedURI).append("\" rel=\"self\"/>\n");
 		sb.append("  <link href=\"").append(startURI).append("\"/>\n");
 		sb.append("  <updated>").append(formatTime(lastUpdated)).append("</updated>\n");
-		sb.append("  <id>urn:node:").append(Base64.encode(core.node.getDarknetIdentity())).append("</id>\n");
+		sb.append("  <id>urn:node:").append(Base64.encode(core.node.getDarknetPubKeyHash())).append("</id>\n");
 		sb.append("  <logo>").append("/favicon.ico").append("</logo>\n");
 		UserAlert[] alerts = getAlerts();
 		for(int i = alerts.length - 1; i >= 0; i--) {
