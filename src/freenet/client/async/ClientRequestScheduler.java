@@ -60,15 +60,15 @@ public class ClientRequestScheduler implements RequestScheduler {
 	public final ClientContext clientContext;
 	final PersistentJobRunner jobRunner;
 	
-	public static final short PRIORITY_NONE = 0;
-	public static final short PRIORITY_SOFT = 1;
-	public static final short PRIORITY_HARD = 2;
-	public static final short PRIORITY_FIRM = 3;
+    public static final short PRIORITY_NONE = 0;
+    public static final short PRIORITY_SOFT = 1;
+    public static final short PRIORITY_HARD = 2;
+    public static final short PRIORITY_FIRM = 3;
 	
-	public static final ArrayList<String> PRIORITY_STRINGS = new ArrayList<String>() {{
-			add("NONE"); add("SOFT"); add("HARD"); add("FIRM");
-	}};
-	private short choosenPriorityScheduler;
+    public static final ArrayList<String> PRIORITY_STRINGS = new ArrayList<String>() {{
+        add("NONE"); add("SOFT"); add("HARD"); add("FIRM");
+    }};
+    private short choosenPriorityScheduler;
 
 	public ClientRequestScheduler(boolean forInserts, boolean forSSKs, boolean forRT, RandomSource random, RequestStarter starter, Node node, NodeClientCore core, String name, ClientContext context) {
 		this.isInsertScheduler = forInserts;
@@ -101,7 +101,7 @@ public class ClientRequestScheduler implements RequestScheduler {
 	 * 
 	 * @param val
 	 */
-	public synchronized void setPriorityScheduler(short val){
+    public synchronized void setPriorityScheduler(short val) {
 		choosenPriorityScheduler = val;
 	}
 	
@@ -237,7 +237,8 @@ public class ClientRequestScheduler implements RequestScheduler {
 	 */
 	@Override
 	public ChosenBlock grabRequest() {
-	    return selector.chooseRequest(choosenPriorityScheduler, random, offeredKeys, starter, isRTScheduler, clientContext);	}
+        return selector.chooseRequest(choosenPriorityScheduler, random, offeredKeys, starter, isRTScheduler, clientContext);
+    }
 	
 	/**
 	 * Remove a KeyListener from the list of KeyListeners.
@@ -270,7 +271,7 @@ public class ClientRequestScheduler implements RequestScheduler {
 		starter.wakeUp();
 	}
 	
-	public short getChoosenPriorityScheduler() {
+    public short getChoosenPriorityScheduler() {
 		return choosenPriorityScheduler;
 	}
 

@@ -147,54 +147,55 @@ public class ClientRequestSelector implements KeysFetchingLocally {
 	 * @return The priority chosen or the time at which a priority will have requests to send.
 	 * LOCKING: Synchronized because we may create new priorities. Both the cooldown queue and the 
 	 * RGA hierarchy, rooted at the priorities, use ClientRequestSelector lock. */
-	private synchronized long choosePriority(short scheduler, RandomSource random, ClientContext context, long now){
-		SectoredRandomGrabArray result = null;
+    private synchronized long choosePriority(short scheduler, RandomSource random, ClientContext context, long now){
+        SectoredRandomGrabArray result = null;
 		
 		long wakeupTime = Long.MAX_VALUE;
 		short iteration = 0, priority;
-		int numPrios = prioritySelector.length;
+        int numPrios = prioritySelector.length;
 
 		// we loop to ensure we try every possibilities ( n + 1)
 		//
-		// scheduler=1 (SOFT) will try weightedRand, then start over as HARD if it fails.
-		// scheduler=2 (HARD) will do 0,1,2,3,4,5
-		// scheduler-3 (FIRM) will try weightedRand, then walk up the prio chain to max,
-		//             then start down the list until all prios are tried
-		// min prio is 'paused', so we skip it
-		switch (scheduler) {
-			case ClientRequestScheduler.PRIORITY_HARD:
-				priority = prioritySelector[iteration];
-				break;			
-			case ClientRequestScheduler.PRIORITY_FIRM:
-				//make sure the first prio we try is at least minPrio priority
-				//remember that the highest priority is 0;
-				do {					
-					priority = firmPrioritySelector[random.nextInt(firmPrioritySelector.length)];
-				} while (priority > RequestStarter.MINIMUM_FETCHABLE_PRIORITY_CLASS);
-				break;
-			case ClientRequestScheduler.PRIORITY_SOFT:
-			default:
-				//make sure the first prio we try is at least minPrio priority
-				//remember that the highest priority is 0;
-				do {					
-					priority = softPrioritySelector[random.nextInt(softPrioritySelector.length)];
-				} while (priority > RequestStarter.MINIMUM_FETCHABLE_PRIORITY_CLASS);
-				break;
-		}
+        // scheduler=1 (SOFT) will try weightedRand, then start over as HARD if it fails.
+        // scheduler=2 (HARD) will do 0,1,2,3,4,5
+        // scheduler-3 (FIRM) will try weightedRand, then walk up the prio chain to max,
+        //             then start down the list until all prios are tried
+        // min prio is 'paused', so we skip it
+        switch (scheduler) {
+            case ClientRequestScheduler.PRIORITY_HARD:
+                priority = prioritySelector[iteration];
+                break;
+            case ClientRequestScheduler.PRIORITY_FIRM:
+                //make sure the first prio we try is at least minPrio priority
+                //remember that the highest priority is 0;
+                do {
+                    priority = firmPrioritySelector[random.nextInt(firmPrioritySelector.length)];
+                } while (priority > RequestStarter.MINIMUM_FETCHABLE_PRIORITY_CLASS);
+                break;
+            case ClientRequestScheduler.PRIORITY_SOFT:
+            default:
+                //make sure the first prio we try is at least minPrio priority
+                //remember that the highest priority is 0;
+                do {
+                    priority = softPrioritySelector[random.nextInt(softPrioritySelector.length)];
+                } while (priority > RequestStarter.MINIMUM_FETCHABLE_PRIORITY_CLASS);
+                break;
+        }
 
-		while((++iteration < numPrios) && (priority <= RequestStarter.MINIMUM_FETCHABLE_PRIORITY_CLASS)) { 
+        while((++iteration < numPrios) && (priority <= RequestStarter.MINIMUM_FETCHABLE_PRIORITY_CLASS)) { 
 			result = priorities[priority];
 			if(result != null) {
-				long cooldownTime = result.getWakeupTime(context, now);
-				if(cooldownTime > 0) {
-					if(cooldownTime < wakeupTime) wakeupTime = cooldownTime;
-					if(logMINOR) {
-						if(cooldownTime == Long.MAX_VALUE)
-							Logger.minor(this, "Priority "+priority+" is waiting until a request finishes or is empty");
-						else
-							Logger.minor(this, "Priority "+priority+" is in cooldown for another "+(cooldownTime - now)+" "+TimeUtil.formatTime(cooldownTime - now));
-					}
-					result = null;
+                long cooldownTime = result.getWakeupTime(context, now);
+                if(cooldownTime > 0) {
+                    if(cooldownTime < wakeupTime) wakeupTime = cooldownTime;
+                    if(logMINOR) {
+                        if(cooldownTime == Long.MAX_VALUE) {
+                            Logger.minor(this, "Priority "+priority+" is waiting until a request finishes or is empty");
+                        } else {
+                            Logger.minor(this, "Priority "+priority+" is in cooldown for another "+(cooldownTime - now)+" "+TimeUtil.formatTime(cooldownTime - now));
+                        }
+                    }
+                    result = null;
 				}
 			}
 
@@ -203,39 +204,40 @@ public class ClientRequestSelector implements KeysFetchingLocally {
 				return priority;
 			}
 			
-			if(logMINOR) {
-				String curSched = ClientRequestScheduler.PRIORITY_STRINGS.get(scheduler);
-				if (result == null)
-					Logger.minor(this, "Priority "+priority+" is null (scheduler = "+curSched+ ", iteration = " + iteration + ")");
-				else
-					Logger.minor(this, "Priority "+priority+" result is empty (scheduler = "+curSched+ ", iteration = " + iteration + ")");
-			}
+            if(logMINOR) {
+                String curSched = ClientRequestScheduler.PRIORITY_STRINGS.get(scheduler);
+                if (result == null) {
+                    Logger.minor(this, "Priority "+priority+" is null (scheduler = "+curSched+ ", iteration = " + iteration + ")");
+                } else {
+                    Logger.minor(this, "Priority "+priority+" result is empty (scheduler = "+curSched+ ", iteration = " + iteration + ")");
+                }
+            }
 
-			//We didn't find a block at the chosen priority, what should we do?
-			switch (scheduler) {
-				case ClientRequestScheduler.PRIORITY_HARD:
-					//try the next lower priority.
-					priority = prioritySelector[iteration];
-					break;
-				case ClientRequestScheduler.PRIORITY_FIRM:
-					//check ever-higher priorities first
-					priority--;
-					//once we've walked backwards to maximum priority looking for a
-					//better one to try, start trying lower priorities.
-					if(priority <0) {
-						priority = prioritySelector[iteration];
-						scheduler=ClientRequestScheduler.PRIORITY_HARD;
-					}
-					break;
-				case ClientRequestScheduler.PRIORITY_SOFT:
-				default:
-					//For the soft scheduler, if we didn't get a block on the first
-					//try, start over using the hard scheduler.
-					scheduler=ClientRequestScheduler.PRIORITY_HARD;
-					iteration=0;
-					priority = prioritySelector[iteration];
-					break;
-			}			
+            //We didn't find a block at the chosen priority, what should we do?
+            switch (scheduler) {
+                case ClientRequestScheduler.PRIORITY_HARD:
+                    //try the next lower priority.
+                    priority = prioritySelector[iteration];
+                    break;
+                case ClientRequestScheduler.PRIORITY_FIRM:
+                    //check ever-higher priorities first
+                    priority--;
+                    //once we've walked backwards to maximum priority looking for a
+                    //better one to try, start trying lower priorities.
+                    if(priority <0) {
+                        priority = prioritySelector[iteration];
+                        scheduler=ClientRequestScheduler.PRIORITY_HARD;
+                    }
+                    break;
+                case ClientRequestScheduler.PRIORITY_SOFT:
+                default:
+                    //For the soft scheduler, if we didn't get a block on the first
+                    //try, start over using the hard scheduler.
+                    scheduler=ClientRequestScheduler.PRIORITY_HARD;
+                    iteration=0;
+                    priority = prioritySelector[iteration];
+                    break;
+                }
 		}
 		
 		return wakeupTime;
@@ -246,10 +248,10 @@ public class ClientRequestSelector implements KeysFetchingLocally {
 	 * running), so we may need to try repeatedly. FIXME this is only necessary because many 
 	 * classes only update their cooldown status when choosing a block to send, e.g. 
 	 * SplitFileInserter. */
-	ChosenBlock chooseRequest(short scheduler, RandomSource random, OfferedKeysList offeredKeys, RequestStarter starter, boolean realTime, ClientContext context) {
+    ChosenBlock chooseRequest(short scheduler, RandomSource random, OfferedKeysList offeredKeys, RequestStarter starter, boolean realTime, ClientContext context) {
 		long now = System.currentTimeMillis();
 		for(int i=0;i<5;i++) {
-			SelectorReturn r = chooseRequestInner(scheduler, random, offeredKeys, starter, realTime, context, now);
+            SelectorReturn r = chooseRequestInner(scheduler, random, offeredKeys, starter, realTime, context, now);
 			SendableRequest req = null;
 			if(r != null && r.req != null) req = r.req;
 			if(req == null) continue;
@@ -346,7 +348,7 @@ public class ClientRequestSelector implements KeysFetchingLocally {
 	 * most of the time.
 	 * @return Either a chosen request or the time at which we should try again if all priorities 
 	 * are waiting for requests to finish / cooldown periods to expire. */
-	SelectorReturn chooseRequestInner(short scheduler, RandomSource random, OfferedKeysList offeredKeys, RequestStarter starter, boolean realTime, ClientContext context, long now) {
+    SelectorReturn chooseRequestInner(short scheduler, RandomSource random, OfferedKeysList offeredKeys, RequestStarter starter, boolean realTime, ClientContext context, long now) {
 		// Priorities start at 0
 		if(logMINOR) Logger.minor(this, "removeFirst()");
 		boolean tryOfferedKeys = offeredKeys != null && random.nextBoolean();
@@ -354,7 +356,7 @@ public class ClientRequestSelector implements KeysFetchingLocally {
 			if(offeredKeys.getWakeupTime(context, now) == 0)
 				return new SelectorReturn(offeredKeys);
 		}
-		long l = choosePriority(scheduler, random, context, now);
+        long l = choosePriority(scheduler, random, context, now);
 		if(l > Integer.MAX_VALUE) {
 			if(logMINOR) Logger.minor(this, "No priority available for the next "+TimeUtil.formatTime(l - now));
 			return null;
@@ -493,49 +495,49 @@ outer:	for(;choosenPriorityClass <= RequestStarter.MINIMUM_FETCHABLE_PRIORITY_CL
 	}
 
 	//FIRM: rand from 32 max, 16 interactive, 8 immediate, 4 updage, 2 bulk, 1 prefetch
-	private static final short[] firmPrioritySelector = { 
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
-		RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+    private static final short[] firmPrioritySelector = { 
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
+        RequestStarter.MAXIMUM_PRIORITY_CLASS, RequestStarter.MAXIMUM_PRIORITY_CLASS,
 
-		RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
-		RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
-		RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
-		RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
-		RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
-		RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
-		RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
-		RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
+        RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
+        RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
+        RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
+        RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
+        RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
+        RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
+        RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
+        RequestStarter.INTERACTIVE_PRIORITY_CLASS, RequestStarter.INTERACTIVE_PRIORITY_CLASS,
 
-		RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS,
-		RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, 
-		RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS,
-		RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, 
+        RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS,
+        RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, 
+        RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS,
+        RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, RequestStarter.IMMEDIATE_SPLITFILE_PRIORITY_CLASS, 
 
-		RequestStarter.UPDATE_PRIORITY_CLASS, RequestStarter.UPDATE_PRIORITY_CLASS, 
-		RequestStarter.UPDATE_PRIORITY_CLASS, RequestStarter.UPDATE_PRIORITY_CLASS, 
+        RequestStarter.UPDATE_PRIORITY_CLASS, RequestStarter.UPDATE_PRIORITY_CLASS, 
+        RequestStarter.UPDATE_PRIORITY_CLASS, RequestStarter.UPDATE_PRIORITY_CLASS, 
 
-		RequestStarter.BULK_SPLITFILE_PRIORITY_CLASS, RequestStarter.BULK_SPLITFILE_PRIORITY_CLASS, 
+        RequestStarter.BULK_SPLITFILE_PRIORITY_CLASS, RequestStarter.BULK_SPLITFILE_PRIORITY_CLASS, 
 
-		RequestStarter.PREFETCH_PRIORITY_CLASS, 
+        RequestStarter.PREFETCH_PRIORITY_CLASS, 
 
-	};
+    };
 
-	//SOFT: rand from 6 max, 5 interactive, 4 immediate, 3 updage, 2 bulk, 1 prefetch
-	private static final short[] softPrioritySelector = { 
+    //SOFT: rand from 6 max, 5 interactive, 4 immediate, 3 updage, 2 bulk, 1 prefetch
+    private static final short[] softPrioritySelector = { 
 		RequestStarter.MAXIMUM_PRIORITY_CLASS,
 		RequestStarter.MAXIMUM_PRIORITY_CLASS,
 		RequestStarter.MAXIMUM_PRIORITY_CLASS,
@@ -564,7 +566,7 @@ outer:	for(;choosenPriorityClass <= RequestStarter.MINIMUM_FETCHABLE_PRIORITY_CL
 		RequestStarter.PREFETCH_PRIORITY_CLASS, 
 	};
 
-	//HARD scheduler
+    //HARD scheduler
 	private static final short[] prioritySelector = {
 		RequestStarter.MAXIMUM_PRIORITY_CLASS,
 		RequestStarter.INTERACTIVE_PRIORITY_CLASS,
