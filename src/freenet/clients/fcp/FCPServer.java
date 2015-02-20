@@ -69,7 +69,7 @@ public class FCPServer implements Runnable, DownloadCache {
 	final WeakHashMap<String, PersistentRequestClient> rebootClientsByName;
 	final PersistentRequestClient globalRebootClient;
 	PersistentRequestClient globalForeverClient;
-	public static final int QUEUE_MAX_RETRIES = -1;
+	public static final int QUEUE_MAX_RETRIES = 3;
 	public static final long QUEUE_MAX_DATA_SIZE = Long.MAX_VALUE;
 	private boolean assumeDownloadDDAIsAllowed;
 	private boolean assumeUploadDDAIsAllowed;
@@ -795,7 +795,7 @@ public class FCPServer implements Runnable, DownloadCache {
 		final ClientGet cg =
 			new ClientGet(persistRebootOnly ? globalRebootClient : globalForeverClient, fetchURI, defaultFetchContext.localRequestOnly,
 					defaultFetchContext.ignoreStore, filterData, QUEUE_MAX_RETRIES,
-					QUEUE_MAX_RETRIES, QUEUE_MAX_DATA_SIZE, returnType, persistRebootOnly, id,
+					QUEUE_MAX_RETRIES*3, QUEUE_MAX_DATA_SIZE, returnType, persistRebootOnly, id,
 					Integer.MAX_VALUE, RequestStarter.BULK_SPLITFILE_PRIORITY_CLASS, returnFilename, null, false, realTimeFlag, false, core);
 		cg.register(false);
 		cg.start(core.clientContext);
