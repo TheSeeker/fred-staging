@@ -1743,12 +1743,12 @@ public class QueueToadlet extends Toadlet implements RequestCompletionCallback, 
 				progressBar.addChild("div", new String[] { "class", "style" }, new String[] { "progressbar-failed", "width: " + failedPercent + "%;" });
 			if (fatallyFailed > 0)
 				progressBar.addChild("div", new String[] { "class", "style" }, new String[] { "progressbar-failed2", "width: " + fatallyFailedPercent + "%;" });
-			if ((fetched + failed + fatallyFailed) < min)
+			if (!advancedMode && (fetched + failed + fatallyFailed) < min)
 				progressBar.addChild("div", new String[] { "class", "style" }, new String[] { "progressbar-min", "width: " + (minPercent - fetchedPercent) + "%;" });
 
 			NumberFormat nf = NumberFormat.getInstance();
 			nf.setMaximumFractionDigits(1);
-			String prefix = '('+Integer.toString(fetched) + "/ " + Integer.toString(min)+"): ";
+			String prefix = '('+Integer.toString(fetched) + " / " + Integer.toString(min) + (advancedMode ? " / " + Integer.toString(failed + fatallyFailed) : "") + "): ";
 			if (finalized) {
 				progressBar.addChild("div", new String[] { "class", "title" }, new String[] { "progress_fraction_finalized", prefix + l10n("progressbarAccurate") }, nf.format((int) ((fetched / (double) min) * 1000) / 10.0) + '%');
 			} else {
