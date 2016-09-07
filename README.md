@@ -75,7 +75,7 @@ option is to create a virtual machine with no internet access, create a clean sn
 having installed the software you need, and then use it to browse the content. Once
 finished, reset to the clean snapshot. However, even this is not certain to be
 absolutely secure: Breaking out of VMs is not completely unheard of; so you will need to
-ecure the VM, or ideally run it on a disconnected machine.
+secure the VM, or ideally run it on a disconnected machine.
 
 You are responsible for your computer's physical security. In many hostile environments
 the most likely attack is people busting down your door and stealing your computer -
